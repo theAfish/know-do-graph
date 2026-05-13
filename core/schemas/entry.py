@@ -30,6 +30,14 @@ class RefinementStatus(str, Enum):
     validated = "validated"
 
 
+class VerificationStatus(str, Enum):
+    unverified = "unverified"
+    peer_reviewed = "peer_reviewed"
+    self_tested = "self_tested"
+    community_tested = "community_tested"
+    deprecated = "deprecated"
+
+
 class EntryMetadata(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source_provenance: Optional[str] = None
@@ -37,10 +45,18 @@ class EntryMetadata(BaseModel):
     refinement_status: RefinementStatus = RefinementStatus.raw
     usage_count: int = 0
     trust_score: Optional[float] = None
-    verification_status: Optional[str] = None
+    verification_status: Optional[VerificationStatus] = None
+    # Script-specific metadata
+    script_language: Optional[str] = None      # e.g. "python", "bash", "julia"
+    script_requirements: list[str] = Field(default_factory=list)  # pip/conda packages
+    script_filename: Optional[str] = None      # suggested filename for download
     related_environments: list[str] = Field(default_factory=list)
     runtime_requirements: list[str] = Field(default_factory=list)
     external_refs: list[str] = Field(default_factory=list)
+    # Review-agent tracking
+    review_count: int = 0
+    modify_count: int = 0
+    last_reviewed_at: Optional[datetime] = None
     custom: dict = Field(default_factory=dict)
 
 
@@ -58,6 +74,7 @@ class Entry(BaseModel):
     entry_type: EntryType = EntryType.generic
     content: str = ""
     tags: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
     metadata: EntryMetadata = Field(default_factory=EntryMetadata)
     internal_refs: list[str] = Field(default_factory=list)
 

@@ -133,12 +133,20 @@ class ExtractionAgent:
             all_entries = entry_repo.get_all()
             slug_map = {e.slug: e.id for e in all_entries}
             title_map = {e.title.lower(): e.id for e in all_entries}
+            alias_map: dict[str, str] = {}
+            for e in all_entries:
+                for a in e.aliases:
+                    alias_map.setdefault(a.lower(), e.id)
 
             for entry in all_entries:
                 for ref in entry.internal_refs:
-                    target_id = slug_map.get(
-                        slug_from_title(ref)
-                    ) or title_map.get(ref.lower())
+                    ref_slug = slug_from_title(ref)
+                    ref_lower = ref.lower()
+                    target_id = (
+                        slug_map.get(ref_slug)
+                        or title_map.get(ref_lower)
+                        or alias_map.get(ref_lower)
+                    )
                     if target_id and target_id != entry.id:
                         edge = Edge(
                             source_id=entry.id,

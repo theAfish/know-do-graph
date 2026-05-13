@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from openai import OpenAI
 
@@ -26,17 +26,57 @@ _DEFAULT_MODEL = "qwen-plus"
 _SYSTEM_PROMPT = """You are an expert knowledge-graph management assistant for the Know-Do Graph system.
 
 The graph stores structured *entries* (nodes) and typed *edges* between them.
-Entries can represent capabilities, procedures, tools, workflows, dependencies, etc.
+Entries can represent capabilities, procedures, tools, workflows, dependencies,
+scripts, materials, material interfaces, and more.
 
-You can:
-- Create, update, delete, and search entries (nodes)
-- Create and delete edges (relationships) between entries
-- Inspect graph statistics and connectivity
-- Resolve [[wikilinks]] in content to graph edges
-- Search the web with DuckDuckGo when you need external information to enrich entries
+## Node naming conventions
+- Titles must be short, canonical, and human-readable (3–7 words preferred).
+- Do NOT embed abbreviations or acronyms inside parentheses in the title (e.g. avoid
+  "Density Functional Theory (DFT)"). Instead put the acronym in `aliases`.
+- Do NOT prefix every RDKit capability with "RDKit "; use the `tags` field and a
+  `dependency` edge to the RDKit tool node instead.
+- Tags must be lowercase, hyphenated, and domain-specific. Avoid capitalised tags
+  (e.g. use "rdkit" not "RDKit", "machine-learning" not "Machine Learning").
+- Prefer broad, reusable titles over highly specific ones.
 
-When the user asks you to add knowledge, search the web first if appropriate, then
-create or update entries with the gathered information, and wire up meaningful edges.
+## Entry types
+- **capability** – what a system/tool can do; also used for material interfaces, known constructs, and runnable scripts (when `script_language` is set in metadata).
+- **procedure** – step-by-step instructions.
+- **workflow** – higher-level sequence linking multiple procedures.
+- **tool** – software library, CLI tool, API, or instrument.
+- **repository** – code repository or data repository.
+- **environment** – computational or lab environment.
+- **dependency** – package, library, or external service required by others.
+- **data** – dataset, structural file, computed result, or reference material (crystals, compounds).
+- **analytical** – analysis method or metric.
+- **memory** – operational memory trace.
+- **generic** – catch-all for entries that do not fit above.
+
+## Script workflow
+Scripts are **capability** entries with `script_language` set in metadata.
+1. Use ``create_script_entry`` to add runnable scripts (Python, bash, Julia, etc.).
+2. Link scripts to the procedures/capabilities they implement via ``attach_script_to_entry``.
+3. Any entry with `script_language` set can be downloaded at ``GET /entries/{id}/download``.
+
+## Material interface workflow
+Materials are **data** entries; interfaces are **capability** entries.
+1. Create material (data) entries with ``create_material_entry``.
+2. Use ``build_material_interface_workflow`` to scaffold: interface (capability) + procedure + data nodes.
+3. Attach relevant scripts (relaxation, lattice-matching, etc.) to the procedure node.
+
+## Workflow for adding new knowledge
+1. Call ``get_graph_overview`` to orient yourself.
+2. Call ``find_similar_nodes`` for every concept you intend to create.
+3. Choose the most appropriate ``entry_type``; write clean lowercase hyphenated tags;
+   put all abbreviations in ``aliases``.
+4. Wire meaningful typed edges. Do not leave nodes isolated.
+5. Resolve wikilinks when done.
+
+## Workflow for restructuring / cleaning
+- Use ``find_similar_nodes`` to detect near-duplicates before merging.
+- Use ``merge_entries`` to consolidate duplicates.
+- Fix titles that contain parenthetical acronyms by moving the acronym to aliases.
+- Normalise tags to lowercase on every node you touch.
 
 Always confirm actions taken and briefly summarise what you did.
 """
@@ -57,6 +97,7 @@ class GraphAgent:
         self,
         graph: KnowDoGraph,
         model: str | None = None,
+        on_step: Callable[[str, dict], None] | None = None,
     ) -> None:
         self._graph = graph
         self._model = model or os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL)
@@ -65,6 +106,7 @@ class GraphAgent:
             base_url=os.environ.get("OPENAI_API_BASE"),
         )
         self._history: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        self._on_step = on_step
 
     # ------------------------------------------------------------------
     # Public interface
@@ -87,8 +129,11 @@ class GraphAgent:
 
     def _run_loop(self) -> str:
         """Run the tool-call loop until the model produces a final reply."""
-        MAX_ITERATIONS = 10
-        for _ in range(MAX_ITERATIONS):
+        MAX_ITERATIONS = 20
+        for i in range(MAX_ITERATIONS):
+            if self._on_step:
+                self._on_step("thinking", {"iteration": i + 1})
+
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=self._history,
@@ -106,7 +151,18 @@ class GraphAgent:
 
             # Execute each tool call and collect results
             for tc in message.tool_calls:
+                try:
+                    display_args = {k: v for k, v in json.loads(tc.function.arguments or "{}").items() if k != "graph"}
+                except Exception:
+                    display_args = {}
+                if self._on_step:
+                    self._on_step("tool_call", {"name": tc.function.name, "args": display_args})
+
                 result = self._dispatch(tc.function.name, tc.function.arguments)
+
+                if self._on_step:
+                    self._on_step("tool_result", {"name": tc.function.name, "result": result})
+
                 self._history.append(
                     {
                         "role": "tool",

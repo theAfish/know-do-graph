@@ -18,6 +18,7 @@ class EntryModel(Base):
     entry_type = Column(String, nullable=False, default="generic")
     content = Column(Text, default="")
     tags = Column(Text, default="[]")           # JSON list
+    aliases = Column(Text, default="[]")        # JSON list
     metadata_json = Column(Text, default="{}")  # JSON object
     internal_refs = Column(Text, default="[]")  # JSON list
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -31,6 +32,7 @@ class EntryModel(Base):
             "entry_type": self.entry_type,
             "content": self.content,
             "tags": json.loads(self.tags or "[]"),
+            "aliases": json.loads(self.aliases or "[]"),
             "metadata": json.loads(self.metadata_json or "{}"),
             "internal_refs": json.loads(self.internal_refs or "[]"),
         }

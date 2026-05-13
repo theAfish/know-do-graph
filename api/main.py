@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import entries, graph as graph_routes, mem as mem_routes
+from api.routes import entries, graph as graph_routes, mem as mem_routes, agent as agent_routes
 from core.app_state import graph
 from core.storage.database import SessionLocal, init_db
 
@@ -49,6 +49,7 @@ app.add_middleware(
 app.include_router(entries.router, prefix="/entries", tags=["entries"])
 app.include_router(graph_routes.router, prefix="/graph", tags=["graph"])
 app.include_router(mem_routes.router, prefix="/mem", tags=["mem"])
+app.include_router(agent_routes.router, prefix="/agent", tags=["agent"])
 
 
 @app.get("/health", tags=["meta"])

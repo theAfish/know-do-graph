@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy.orm import Session
 
 from core.app_state import graph as _graph
@@ -48,8 +49,8 @@ def search_entries(
 
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
-    """Retrieve a single entry by ID or slug."""
-    entry = engine.get_entry_by_id(entry_id) or engine.get_entry_by_slug(entry_id)
+    """Retrieve a single entry by ID, slug, or alias."""
+    entry = engine.resolve_identifier(entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
     return entry.model_dump(mode="json")
@@ -98,3 +99,51 @@ def get_related(
 def get_edges(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     """Return all edges incident to *entry_id*."""
     return [e.model_dump(mode="json") for e in engine.get_edges_for_entry(entry_id)]
+
+
+@router.get("/{entry_id}/download")
+def download_script(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
+    """Download the raw source code of an entry that has script metadata.
+
+    Returns the script content as a plain-text file with a ``Content-Disposition``
+    header that suggests the stored filename so the caller can save it directly.
+
+    Any entry with ``metadata.script_language`` set is considered downloadable.
+    Returns 400 if the entry has no script language metadata.
+    """
+    entry = engine.resolve_identifier(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if not entry.metadata.script_language:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Entry '{entry_id}' has no script_language in metadata — not a downloadable script.",
+        )
+
+    filename = entry.metadata.script_filename or (entry.slug + ".txt")
+    # Sanitise filename — strip path separators to prevent header injection
+    filename = filename.replace("/", "_").replace("\\", "_").replace('"', "")
+
+    media_type = _media_type_for_language(entry.metadata.script_language or "")
+    return Response(
+        content=entry.content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _media_type_for_language(language: str) -> str:
+    mapping = {
+        "python": "text/x-python",
+        "py": "text/x-python",
+        "bash": "text/x-sh",
+        "shell": "text/x-sh",
+        "sh": "text/x-sh",
+        "julia": "text/x-julia",
+        "javascript": "text/javascript",
+        "js": "text/javascript",
+        "typescript": "text/typescript",
+        "ts": "text/typescript",
+        "r": "text/x-r",
+    }
+    return mapping.get(language.lower(), "text/plain")

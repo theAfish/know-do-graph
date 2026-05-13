@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
@@ -29,3 +29,11 @@ def init_db() -> None:
     from core.storage.models import Base
 
     Base.metadata.create_all(bind=engine)
+
+    # Migrate: add aliases column if it doesn't exist yet (SQLite only supports ADD COLUMN)
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE entries ADD COLUMN aliases TEXT DEFAULT '[]'"))
+            conn.commit()
+        except Exception:
+            pass  # column already exists

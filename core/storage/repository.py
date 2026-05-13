@@ -46,6 +46,7 @@ class EntryRepository:
             entry_type=entry.entry_type.value,
             content=entry.content,
             tags=json.dumps(entry.tags),
+            aliases=json.dumps(entry.aliases),
             metadata_json=json.dumps(entry.metadata.model_dump(mode="json")),
             internal_refs=json.dumps(entry.internal_refs),
             created_at=datetime.utcnow(),
@@ -67,6 +68,7 @@ class EntryRepository:
         model.entry_type = entry.entry_type.value
         model.content = entry.content
         model.tags = json.dumps(entry.tags)
+        model.aliases = json.dumps(entry.aliases)
         model.metadata_json = json.dumps(entry.metadata.model_dump(mode="json"))
         model.internal_refs = json.dumps(entry.internal_refs)
         model.updated_at = datetime.utcnow()

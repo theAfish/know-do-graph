@@ -89,6 +89,30 @@ class KnowDoGraph:
 
         return neighbors
 
+    def get_related_ids(
+        self,
+        entry_id: str,
+        depth: int = 1,
+        relation: Optional[EdgeRelation] = None,
+    ) -> list[str]:
+        """BFS from *entry_id* up to *depth* hops, optionally filtered by relation type.
+
+        Returns IDs of all reachable nodes (excluding the start node).
+        """
+        visited: set[str] = {entry_id}
+        frontier: set[str] = {entry_id}
+        for _ in range(depth):
+            next_frontier: set[str] = set()
+            for node in frontier:
+                for nbr_info in self.get_neighbors(node, relation=relation):
+                    nbr_id = nbr_info["id"]
+                    if nbr_id not in visited:
+                        next_frontier.add(nbr_id)
+            frontier = next_frontier
+            visited.update(frontier)
+        visited.discard(entry_id)
+        return list(visited)
+
     def get_subgraph(self, entry_id: str, depth: int = 2) -> nx.DiGraph:
         """Return an ego-subgraph centred on entry_id up to *depth* hops."""
         nodes = {entry_id}

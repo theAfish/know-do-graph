@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from core.graph.graph import KnowDoGraph
@@ -29,6 +30,29 @@ class RetrievalEngine:
         row = self._db.query(EntryModel).filter_by(slug=slug).first()
         return Entry(**row.to_dict()) if row else None
 
+    def get_entry_by_alias(self, alias: str) -> Optional[Entry]:
+        """Return the first entry whose aliases list contains *alias* (case-insensitive)."""
+        alias_lower = alias.lower()
+        # Aliases are stored as a JSON array in a Text column; use LIKE for a quick scan.
+        rows = (
+            self._db.query(EntryModel)
+            .filter(EntryModel.aliases.ilike(f"%{alias_lower}%"))
+            .all()
+        )
+        for row in rows:
+            entry = Entry(**row.to_dict())
+            if any(a.lower() == alias_lower for a in entry.aliases):
+                return entry
+        return None
+
+    def resolve_identifier(self, identifier: str) -> Optional[Entry]:
+        """Try ID → slug → alias in order and return the first match."""
+        return (
+            self.get_entry_by_id(identifier)
+            or self.get_entry_by_slug(identifier)
+            or self.get_entry_by_alias(identifier)
+        )
+
     def list_entries(self, limit: int = 50, offset: int = 0) -> list[Entry]:
         rows = self._db.query(EntryModel).offset(offset).limit(limit).all()
         return [Entry(**row.to_dict()) for row in rows]
@@ -43,23 +67,24 @@ class RetrievalEngine:
         q = self._db.query(EntryModel)
         if entry_type:
             q = q.filter(EntryModel.entry_type == entry_type.value)
-        # Fetch a broad slice then filter in Python (sufficient for early scale)
+        # Push title/content/alias matching down to SQL before pulling rows
+        if query:
+            ql = f"%{query}%"
+            q = q.filter(
+                or_(
+                    EntryModel.title.ilike(ql),
+                    EntryModel.content.ilike(ql),
+                    EntryModel.aliases.ilike(ql),
+                )
+            )
         rows = q.limit(500).all()
 
         results: list[Entry] = []
         for row in rows:
             d = row.to_dict()
+            # Tags are JSON-serialised; filter in Python
             if tags and not any(t in d["tags"] for t in tags):
                 continue
-            if query:
-                ql = query.lower()
-                hit = (
-                    ql in d["title"].lower()
-                    or ql in d["content"].lower()
-                    or any(ql in t.lower() for t in d["tags"])
-                )
-                if not hit:
-                    continue
             results.append(Entry(**d))
             if len(results) >= limit:
                 break
@@ -90,12 +115,11 @@ class RetrievalEngine:
         depth: int = 1,
         relation: Optional[EdgeRelation] = None,
     ) -> list[Entry]:
-        neighbor_infos = self._graph.get_neighbors(
-            entry_id, relation=relation
-        )
+        related_ids = self._graph.get_related_ids(entry_id, depth=depth, relation=relation)
         entries: list[Entry] = []
-        for info in neighbor_infos:
-            entry = self.get_entry_by_id(info["id"])
+        for rid in related_ids:
+            entry = self.get_entry_by_id(rid)
             if entry:
                 entries.append(entry)
         return entries
+

@@ -25,6 +25,9 @@ class EdgeRelation(str, Enum):
     transformation = "transformation"
     provenance = "provenance"
     compatibility = "compatibility"
+    implements = "implements"
+    uses = "uses"
+    documents = "documents"
 
 
 class Edge(BaseModel):

@@ -390,14 +390,29 @@ def agent_chat(
         console.print("[red]OPENAI_API_KEY is not set.[/red]  Add it to your .env or environment.")
         raise typer.Exit(1)
 
+    import json as _json
+
     from core import app_state
     from agents.graph_agent.agent import GraphAgent
 
-    graph_agent = GraphAgent(app_state.graph, model=model)
+    def _step_handler(event: str, data: dict) -> None:
+        if event == "thinking":
+            console.print(f"[dim]↻  iteration {data['iteration']} — calling model…[/dim]")
+        elif event == "tool_call":
+            args_preview = _json.dumps(data["args"], default=str, ensure_ascii=False)
+            if len(args_preview) > 160:
+                args_preview = args_preview[:160] + "…"
+            console.print(f"  [cyan]→ {data['name']}[/cyan]  [dim]{args_preview}[/dim]")
+        elif event == "tool_result":
+            result_preview = _json.dumps(data["result"], default=str, ensure_ascii=False)
+            if len(result_preview) > 240:
+                result_preview = result_preview[:240] + "…"
+            console.print(f"  [yellow]← {data['name']}[/yellow]  [dim]{result_preview}[/dim]")
+
+    graph_agent = GraphAgent(app_state.graph, model=model, on_step=_step_handler)
 
     def _run(msg: str) -> None:
-        with console.status("[bold green]Thinking…[/bold green]"):
-            reply = graph_agent.chat(msg)
+        reply = graph_agent.chat(msg)
         console.rule("[dim]Agent[/dim]")
         console.print(reply)
         console.rule()

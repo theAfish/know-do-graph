@@ -394,6 +394,28 @@ async function openDetail(nodeId) {
   ].filter(Boolean);
   if (mdRows.length) html += section('Metadata', mdRows);
 
+  // Script section — shown for any entry with script_language in metadata
+  if (md.script_language) {
+    const lang = md.script_language || 'unknown';
+    const reqs = (md.script_requirements && md.script_requirements.length)
+      ? md.script_requirements.join(', ') : '—';
+    const fname = md.script_filename || entry.slug + '.txt';
+    const dlUrl = `${API}/entries/${entry.id}/download`;
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Script</div>
+      ${kv('Language', lang)}
+      ${kv('Requirements', reqs)}
+      ${kv('Filename', fname)}
+      <div style="margin-top:8px">
+        <a href="${escAttr(dlUrl)}" download="${escAttr(fname)}"
+           style="display:inline-block;background:#e36209;color:#fff;border-radius:6px;
+                  padding:5px 14px;font-size:12px;text-decoration:none;font-weight:600;">
+          ⬇ Download ${escHtml(fname)}
+        </a>
+      </div>
+    </div>`;
+  }
+
   if (md.related_environments && md.related_environments.length)
     html += section('Related environments', [kv('', md.related_environments.join(', '))]);
   if (md.runtime_requirements && md.runtime_requirements.length)
