@@ -1,0 +1,29 @@
+{
+  "211e8260-e117-4655-85b7-fa080f98b507": {
+    "id": "211e8260-e117-4655-85b7-fa080f98b507",
+    "session_id": "test-flex",
+    "content": "[user] tell me about MACE\n[assistant] MACE is a [[MACE Calculator]]",
+    "tags": [
+      "test",
+      "openai"
+    ],
+    "source_entry_ids": [],
+    "created_at": "2026-05-13T03:33:21.816474Z",
+    "success": null,
+    "promoted": false,
+    "promotion_target_id": null,
+    "source_format": "openai_messages",
+    "raw_source": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "tell me about MACE"
+        },
+        {
+          "role": "assistant",
+          "content": "MACE is a [[MACE Calculator]]"
+        }
+      ]
+    }
+  }
+}
