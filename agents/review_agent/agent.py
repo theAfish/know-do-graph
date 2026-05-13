@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Callable
 
 from openai import OpenAI
 
@@ -89,9 +89,11 @@ class ReviewAgent:
         graph: KnowDoGraph,
         model: str | None = None,
         batch_size: int = 5,
+        on_step: Callable[[str, dict], None] | None = None,
     ) -> None:
         self._graph = graph
         self._batch_size = batch_size
+        self._on_step = on_step
         self._model = model or os.environ.get(
             "REVIEW_AGENT_MODEL",
             os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL),
@@ -131,7 +133,10 @@ class ReviewAgent:
 
     def _run_loop(self, history: list[dict]) -> str:
         MAX_ITERATIONS = 30
-        for _ in range(MAX_ITERATIONS):
+        for i in range(MAX_ITERATIONS):
+            if self._on_step:
+                self._on_step("thinking", {"iteration": i + 1})
+
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=history,
@@ -146,7 +151,18 @@ class ReviewAgent:
             history.append(message.model_dump(exclude_unset=True))
 
             for tc in message.tool_calls:
+                try:
+                    display_args = {k: v for k, v in json.loads(tc.function.arguments or "{}").items() if k != "graph"}
+                except Exception:
+                    display_args = {}
+                if self._on_step:
+                    self._on_step("tool_call", {"name": tc.function.name, "args": display_args})
+
                 result = self._dispatch(tc.function.name, tc.function.arguments)
+
+                if self._on_step:
+                    self._on_step("tool_result", {"name": tc.function.name, "result": result})
+
                 history.append(
                     {
                         "role": "tool",

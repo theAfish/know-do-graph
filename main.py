@@ -468,6 +468,228 @@ def agent_run(
 
 
 # ===========================================================================
+# review sub-commands
+# ===========================================================================
+
+review_app = typer.Typer(help="ReviewAgent — audit and clean the graph", no_args_is_help=True)
+app.add_typer(review_app, name="review")
+
+
+def _make_step_handler():
+    import json as _json
+
+    def _step_handler(event: str, data: dict) -> None:
+        if event == "thinking":
+            console.print(f"[dim]↻  iteration {data['iteration']}…[/dim]")
+        elif event == "orchestrator_thinking":
+            console.print(f"[dim bold magenta]◈  orchestrator iteration {data['iteration']}…[/dim bold magenta]")
+        elif event == "route":
+            console.print(f"[bold magenta]→  routing to:[/bold magenta] [cyan]{data['agent']}[/cyan]  [dim]{data.get('args', {})}[/dim]")
+        elif event == "tool_call":
+            args_preview = _json.dumps(data["args"], default=str, ensure_ascii=False)
+            if len(args_preview) > 160:
+                args_preview = args_preview[:160] + "…"
+            console.print(f"  [cyan]→ {data['name']}[/cyan]  [dim]{args_preview}[/dim]")
+        elif event == "tool_result":
+            result_preview = _json.dumps(data["result"], default=str, ensure_ascii=False)
+            if len(result_preview) > 240:
+                result_preview = result_preview[:240] + "…"
+            console.print(f"  [yellow]← {data['name']}[/yellow]  [dim]{result_preview}[/dim]")
+
+    return _step_handler
+
+
+@review_app.command("run")
+def review_run(
+    instructions: str = typer.Argument("", help="Optional focus for this review session"),
+    batch_size: int = typer.Option(5, "--batch", "-b", help="Nodes to review per session"),
+    model: str = typer.Option(None, "--model", "-m"),
+) -> None:
+    """Run one review session (sample nodes, inspect, fix, mark reviewed)."""
+    import os
+
+    _init()
+    _rebuild_graph()
+
+    if "OPENAI_API_KEY" not in os.environ:
+        console.print("[red]OPENAI_API_KEY is not set.[/red]")
+        raise typer.Exit(1)
+
+    from core import app_state
+    from agents.review_agent.agent import ReviewAgent
+
+    agent = ReviewAgent(app_state.graph, model=model, batch_size=batch_size, on_step=_make_step_handler())
+    console.print(f"[bold]ReviewAgent[/bold]  batch={batch_size}" + (f"  focus: {instructions}" if instructions else ""))
+    reply = agent.run_review(instructions=instructions)
+    console.rule("[dim]Review summary[/dim]")
+    console.print(reply)
+    console.rule()
+
+
+@review_app.command("chat")
+def review_chat(
+    message: str = typer.Argument(None, help="Single message (omit for interactive REPL)"),
+    model: str = typer.Option(None, "--model", "-m"),
+) -> None:
+    """Chat interactively with the ReviewAgent."""
+    import os
+
+    _init()
+    _rebuild_graph()
+
+    if "OPENAI_API_KEY" not in os.environ:
+        console.print("[red]OPENAI_API_KEY is not set.[/red]")
+        raise typer.Exit(1)
+
+    from core import app_state
+    from agents.review_agent.agent import ReviewAgent
+
+    agent = ReviewAgent(app_state.graph, model=model, on_step=_make_step_handler())
+
+    def _run(msg: str) -> None:
+        reply = agent.chat(msg)
+        console.rule("[dim]ReviewAgent[/dim]")
+        console.print(reply)
+        console.rule()
+
+    if message:
+        _run(message)
+        return
+
+    console.print("[bold]Know-Do Graph ReviewAgent[/bold]  (type [dim]exit[/dim] to stop)")
+    while True:
+        try:
+            user_input = typer.prompt("You")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Goodbye.[/dim]")
+            break
+        if user_input.strip().lower() in {"exit", "quit"}:
+            console.print("[dim]Goodbye.[/dim]")
+            break
+        if not user_input.strip():
+            continue
+        _run(user_input)
+
+
+@review_app.command("stats")
+def review_stats() -> None:
+    """Show review coverage statistics across all nodes."""
+    _init()
+    from core.storage.database import SessionLocal
+    from core.storage.models import EntryModel
+    import json as _json
+
+    with SessionLocal() as db:
+        rows = db.query(EntryModel).all()
+
+    total = len(rows)
+    reviewed = 0
+    unreviewed_titles = []
+    table = Table("Title", "Type", "Reviews", "Modifications", "Last Reviewed")
+    for row in rows:
+        meta = _json.loads(row.metadata_json or "{}")
+        rc = meta.get("review_count", 0)
+        mc = meta.get("modify_count", 0)
+        lr = meta.get("last_reviewed_at") or "—"
+        if isinstance(lr, str) and len(lr) > 19:
+            lr = lr[:19]
+        if rc > 0:
+            reviewed += 1
+        else:
+            unreviewed_titles.append(row.title)
+        table.add_row(row.title, row.entry_type, str(rc), str(mc), lr)
+
+    console.print(table)
+    console.print(f"\n[bold]Coverage:[/bold] {reviewed}/{total} nodes reviewed "
+                  f"([green]{100*reviewed//total if total else 0}%[/green])")
+
+
+# ===========================================================================
+# orchestrate command
+# ===========================================================================
+
+orchestrate_app = typer.Typer(help="Orchestrator — routes tasks to the right agent", no_args_is_help=True)
+app.add_typer(orchestrate_app, name="orchestrate")
+
+
+@orchestrate_app.command("chat")
+def orchestrate_chat(
+    message: str = typer.Argument(None, help="Single message (omit for interactive REPL)"),
+    model: str = typer.Option(None, "--model", "-m"),
+) -> None:
+    """Route a request through the orchestrator to the appropriate agent(s)."""
+    import os
+
+    _init()
+    _rebuild_graph()
+
+    if "OPENAI_API_KEY" not in os.environ:
+        console.print("[red]OPENAI_API_KEY is not set.[/red]")
+        raise typer.Exit(1)
+
+    from core import app_state
+    from agents.orchestrator.agent import OrchestratorAgent
+
+    orchestrator = OrchestratorAgent(app_state.graph, model=model, on_step=_make_step_handler())
+
+    def _run(msg: str) -> None:
+        reply = orchestrator.chat(msg)
+        console.rule("[dim]Result[/dim]")
+        console.print(reply)
+        console.rule()
+
+    if message:
+        _run(message)
+        return
+
+    console.print(
+        "[bold]Know-Do Graph Orchestrator[/bold]  "
+        "(type [dim]exit[/dim] to stop, [dim]reset[/dim] to clear history)"
+    )
+    while True:
+        try:
+            user_input = typer.prompt("You")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Goodbye.[/dim]")
+            break
+        if user_input.strip().lower() in {"exit", "quit"}:
+            console.print("[dim]Goodbye.[/dim]")
+            break
+        if user_input.strip().lower() == "reset":
+            orchestrator.reset()
+            console.print("[dim]History cleared.[/dim]")
+            continue
+        if not user_input.strip():
+            continue
+        _run(user_input)
+
+
+@orchestrate_app.command("run")
+def orchestrate_run(
+    task: str = typer.Argument(..., help="Natural-language task"),
+    model: str = typer.Option(None, "--model", "-m"),
+) -> None:
+    """Run a one-shot task through the orchestrator."""
+    import os
+
+    _init()
+    _rebuild_graph()
+
+    if "OPENAI_API_KEY" not in os.environ:
+        console.print("[red]OPENAI_API_KEY is not set.[/red]")
+        raise typer.Exit(1)
+
+    from core import app_state
+    from agents.orchestrator.agent import OrchestratorAgent
+
+    orchestrator = OrchestratorAgent(app_state.graph, model=model, on_step=_make_step_handler())
+    reply = orchestrator.chat(task)
+    console.rule("[dim]Result[/dim]")
+    console.print(reply)
+    console.rule()
+
+
+# ===========================================================================
 # serve
 # ===========================================================================
 

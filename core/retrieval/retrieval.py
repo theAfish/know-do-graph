@@ -67,28 +67,53 @@ class RetrievalEngine:
         q = self._db.query(EntryModel)
         if entry_type:
             q = q.filter(EntryModel.entry_type == entry_type.value)
-        # Push title/content/alias matching down to SQL before pulling rows
+
+        # Split query into tokens so multi-word phrases match entries containing
+        # *any* individual token (broad OR), then rank by token hit count.
+        _STOP_WORDS = {"a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or", "is", "are", "be"}
+        tokens: list[str] = []
         if query:
-            ql = f"%{query}%"
-            q = q.filter(
-                or_(
-                    EntryModel.title.ilike(ql),
-                    EntryModel.content.ilike(ql),
-                    EntryModel.aliases.ilike(ql),
+            tokens = [
+                t for t in query.lower().split()
+                if len(t) > 2 and t not in _STOP_WORDS
+            ]
+            if not tokens:
+                tokens = [query.lower()]
+
+            token_filters = []
+            for token in tokens:
+                tl = f"%{token}%"
+                token_filters.append(
+                    or_(
+                        EntryModel.title.ilike(tl),
+                        EntryModel.content.ilike(tl),
+                        EntryModel.aliases.ilike(tl),
+                    )
                 )
-            )
+            q = q.filter(or_(*token_filters))
+
         rows = q.limit(500).all()
 
-        results: list[Entry] = []
+        scored: list[tuple[int, Entry]] = []
         for row in rows:
             d = row.to_dict()
-            # Tags are JSON-serialised; filter in Python
             if tags and not any(t in d["tags"] for t in tags):
                 continue
-            results.append(Entry(**d))
-            if len(results) >= limit:
-                break
-        return results
+            entry = Entry(**d)
+            if tokens:
+                haystack = " ".join([
+                    (d.get("title") or ""),
+                    (d.get("content") or ""),
+                    str(d.get("aliases") or ""),
+                    str(d.get("tags") or ""),
+                ]).lower()
+                score = sum(1 for token in tokens if token in haystack)
+            else:
+                score = 0
+            scored.append((score, entry))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [e for _, e in scored[:limit]]
 
     # ------------------------------------------------------------------
     # Edge lookups

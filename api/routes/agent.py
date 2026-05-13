@@ -64,3 +64,18 @@ def review_agent_chat(body: ChatRequest) -> dict:
     agent = ReviewAgent(graph=_graph, model=body.model)
     response = agent.chat(body.message)
     return {"response": response}
+
+
+@router.post("/orchestrate", tags=["agent"])
+def orchestrate(body: ChatRequest) -> dict:
+    """Route a request through the Orchestrator to the appropriate agent(s)."""
+    import os
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured.")
+
+    from agents.orchestrator.agent import OrchestratorAgent
+
+    agent = OrchestratorAgent(graph=_graph, model=body.model)
+    response = agent.chat(body.message)
+    return {"response": response}
