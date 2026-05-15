@@ -169,6 +169,115 @@ Interactive docs at `http://127.0.0.1:8000/docs` once the server is running.
 
 ---
 
+## Remote agent access
+
+The server exposes a dedicated `/remote` interface so that agents running on
+other machines can discover, query, and interact with the graph over plain HTTP
+— no special client library required.
+
+### Discovery: the instruction sheet
+
+When any client hits the server root (or `/remote`), it receives a plain-text
+instruction sheet explaining every available endpoint, request formats, and
+example `curl` commands:
+
+```bash
+curl http://<host>:<port>/
+# or
+curl http://<host>:<port>/remote
+```
+
+### Remote agent endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Instruction sheet (plain text) |
+| `GET` | `/remote` | Same instruction sheet |
+| `POST` | `/remote/chat` | Chat with the orchestrator agent |
+| `GET` | `/remote/search` | Search entries (`?q=&tags=&entry_type=&limit=`) |
+| `GET` | `/remote/graph` | Graph stats + full node/edge dump |
+| `GET` | `/remote/entry/{id}` | Entry by ID, slug, or alias |
+| `GET` | `/remote/entry/{id}/related` | Related entries via BFS (`?depth=1&relation=`) |
+| `POST` | `/remote/feedback` | Submit feedback as a memory trace |
+| `DELETE` | `/remote/session/{id}` | Clear a session's chat history |
+
+### Chat (one-shot)
+
+```bash
+curl -X POST http://<host>:<port>/remote/chat \
+     -H "Content-Type: application/json" \
+     -d '{"message": "What entries exist in the graph?"}'
+```
+
+```json
+{"response": "The graph currently contains ...", "session_id": "a1b2c3..."}
+```
+
+### Chat (multi-turn)
+
+Pass a stable `session_id` to retain conversation history across calls:
+
+```bash
+# Turn 1
+curl -X POST http://<host>:<port>/remote/chat \
+     -H "Content-Type: application/json" \
+     -d '{"message": "List all procedure entries", "session_id": "agent-42"}'
+
+# Turn 2 — the server remembers the context from turn 1
+curl -X POST http://<host>:<port>/remote/chat \
+     -H "Content-Type: application/json" \
+     -d '{"message": "Now show the dependencies of the first one", "session_id": "agent-42"}'
+
+# Clear history when done
+curl -X DELETE http://<host>:<port>/remote/session/agent-42
+```
+
+### Search
+
+```bash
+# Free-text search
+curl "http://<host>:<port>/remote/search?q=relaxation&limit=5"
+
+# Filter by type
+curl "http://<host>:<port>/remote/search?entry_type=tool"
+
+# Combined: text + tags
+curl "http://<host>:<port>/remote/search?q=ase&tags=python,simulation"
+```
+
+### Feedback / observations
+
+Remote agents can store feedback or observations as memory traces, which can
+later be promoted to full knowledge entries:
+
+```bash
+curl -X POST http://<host>:<port>/remote/feedback \
+     -H "Content-Type: application/json" \
+     -d '{
+       "session_id": "agent-42",
+       "content": "The MACE entry is missing a link to the relaxation workflow",
+       "tags": ["feedback", "graph-quality"],
+       "success": null
+     }'
+```
+
+Promote feedback traces to entries via `POST /mem/{session_id}/{mem_id}/promote`.
+
+### Starting the server for remote access
+
+```bash
+# Expose on all interfaces so other machines can connect:
+python main.py serve --host 0.0.0.0 --port 8000
+
+# With auto-reload during development:
+python main.py serve --host 0.0.0.0 --port 8000 --reload
+```
+
+Set `OPENAI_API_KEY` (and optionally `OPENAI_API_BASE`) before starting if you
+want the `/remote/chat` endpoint to work.
+
+---
+
 ## Connecting agent frameworks
 
 MemGraph accepts session data in whichever format the agent framework already
@@ -305,6 +414,7 @@ api/
     entries.py        CRUD + search + traversal endpoints
     graph.py          Stats, subgraph, path-finding endpoints
     mem.py            Mem-Graph ingestion + management endpoints
+    remote.py         Remote agent access + instruction sheet endpoints
 
 data/
   know_do_graph.db    SQLite database (auto-created)

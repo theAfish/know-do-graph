@@ -10,7 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from fastapi import Request
+from fastapi.responses import PlainTextResponse
+
 from api.routes import entries, graph as graph_routes, mem as mem_routes, agent as agent_routes
+from api.routes import remote as remote_routes
 from core.app_state import graph
 from core.storage.database import SessionLocal, init_db
 
@@ -50,11 +54,19 @@ app.include_router(entries.router, prefix="/entries", tags=["entries"])
 app.include_router(graph_routes.router, prefix="/graph", tags=["graph"])
 app.include_router(mem_routes.router, prefix="/mem", tags=["mem"])
 app.include_router(agent_routes.router, prefix="/agent", tags=["agent"])
+app.include_router(remote_routes.router, prefix="/remote", tags=["remote"])
 
 
 @app.get("/health", tags=["meta"])
 def health() -> dict:
     return {"status": "ok", **graph.stats()}
+
+
+@app.get("/", response_class=PlainTextResponse, include_in_schema=False)
+def root_instructions(request: Request) -> PlainTextResponse:
+    """Return the plain-text instruction sheet for any client that hits the server root."""
+    from api.routes.remote import _render_instructions
+    return PlainTextResponse(_render_instructions(request))
 
 
 # ── Frontend ──────────────────────────────────────────────────────────────────
