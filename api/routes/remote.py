@@ -85,6 +85,20 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
          -H "Content-Type: application/json" \\
          -d '{{"session_id": "agent-01", "content": "Entry X needs more detail", "tags": ["feedback"]}}'
 
+    # Report that you have TESTED a node and it works (or is bugged).
+    # This updates the entry's verification_status and appends to its feedback_log.
+    # verdict: works | peer_works | bugged | deprecated | unclear
+    curl -X POST http://{host}/entries/<id-or-slug>/feedback \\
+         -H "Content-Type: application/json" \\
+         -d '{{"verdict": "works", "note": "ran on H2O, converged", "agent_id": "matcreator-01"}}'
+
+    # Or do both in one call — store a memory trace AND update the entry:
+    curl -X POST http://{host}/remote/feedback \\
+         -H "Content-Type: application/json" \\
+         -d '{{"session_id": "agent-01", "content": "MACE relaxation diverged on Cu",
+              "entry_id": "mace-relaxation", "verdict": "bugged",
+              "agent_id": "matcreator-01"}}'
+
     # Clear session history:
     curl -X DELETE http://{host}/remote/session/agent-01
 
@@ -100,8 +114,17 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
     GET  /remote/graph               — Graph stats + full node/edge list
     GET  /remote/entry/{{id}}          — Entry by ID, slug, or alias
     GET  /remote/entry/{{id}}/related  — Related entries (BFS)
-    POST /remote/feedback            — Submit feedback as a memory trace
+    POST /remote/feedback            — Free-form trace; optionally also updates an entry
+    POST /entries/{{id}}/feedback      — Direct verification feedback on a node
+    GET  /entries/{{id}}/download      — Download a script entry's source code
     DELETE /remote/session/{{id}}      — Clear a session's chat history
+
+    ═══ NODE VERIFICATION ═══════════════════════════════════════════════
+
+    Every entry has a `verification_status` (unverified by default). When you
+    use a skill/procedure node and verify it works (or find it broken),
+    POST to /entries/{{id}}/feedback so the graph learns. Verdicts:
+      works | peer_works | bugged | deprecated | unclear
 
     ═══ CHAT REQUEST BODY ═══════════════════════════════════════════════
 
@@ -162,6 +185,11 @@ class FeedbackRequest(BaseModel):
     content: str
     tags: list[str] = []
     success: Optional[bool] = None
+    # When set, the feedback also updates the named entry's verification_status
+    # via the same mechanism as POST /entries/{id}/feedback.
+    entry_id: Optional[str] = None
+    verdict: Optional[str] = None  # works | peer_works | bugged | deprecated | unclear
+    agent_id: Optional[str] = None
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -293,18 +321,34 @@ def remote_get_related(
 @router.post(
     "/feedback",
     status_code=201,
-    summary="Submit feedback as a memory trace",
+    summary="Submit feedback as a memory trace (and optionally update an entry)",
     tags=["remote"],
 )
 def remote_feedback(body: FeedbackRequest) -> dict:
-    """Store an observation, question, or feedback note as a MemGraph trace.
+    """Store feedback as a MemGraph trace.
 
-    Traces can later be promoted to full knowledge-graph entries via
-    ``POST /mem/{session_id}/{mem_id}/promote``.
+    If ``entry_id`` and ``verdict`` are supplied, also call ``submit_feedback``
+    on that entry so its ``verification_status`` is updated and the event
+    appears in the entry's ``feedback_log`` — letting external agents close
+    the loop with a single call.
     """
     mem = MemGraph(session_id=body.session_id)
     entry = mem.add(content=body.content, tags=body.tags, success=body.success)
-    return {"id": entry.id, "session_id": body.session_id, "stored": True}
+    result: dict = {"id": entry.id, "session_id": body.session_id, "stored": True}
+
+    if body.entry_id and body.verdict:
+        from agents.graph_agent.tools import submit_feedback
+
+        fb = submit_feedback(
+            entry_id=body.entry_id,
+            verdict=body.verdict,
+            note=body.content,
+            evidence="",
+            agent_id=body.agent_id or body.session_id,
+            graph=_graph,
+        )
+        result["entry_feedback"] = fb
+    return result
 
 
 @router.delete(

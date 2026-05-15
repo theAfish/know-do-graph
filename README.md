@@ -142,6 +142,8 @@ Interactive docs at `http://127.0.0.1:8000/docs` once the server is running.
 | `DELETE` | `/entries/{id}` | Delete entry |
 | `GET` | `/entries/{id}/related?depth=1&relation=...` | Traverse related entries |
 | `GET` | `/entries/{id}/edges` | All edges incident to an entry |
+| `GET` | `/entries/{id}/download` | Download script content (entries with `script_language` set) |
+| `POST` | `/entries/{id}/feedback` | Record verification feedback (works / bugged / …) |
 
 ### Graph
 
@@ -166,6 +168,41 @@ Interactive docs at `http://127.0.0.1:8000/docs` once the server is running.
 | `POST` | `/mem/{session}/ingest/raw` | Ingest arbitrary JSON |
 | `DELETE` | `/mem/{session}/{mem_id}` | Delete a trace |
 | `POST` | `/mem/{session}/{mem_id}/promote` | Promote trace → KDG entry |
+
+---
+
+## Node verification & self-evolution
+
+Every entry carries metadata that lets the graph evolve from raw scraped notes
+into a trusted capability library:
+
+| Field | Purpose |
+|-------|---------|
+| `verification_status` | `unverified` (default) → `self_tested` / `peer_reviewed` / `community_tested` / `bugged` / `deprecated` |
+| `feedback_log` | Append-only list of `{timestamp, agent_id, verdict, note, evidence}` |
+| `needs_generalization` | Set automatically when `create_entry` detects an overly specific title (e.g. `Build H2O`) overlapping an existing generic node |
+| `review_count` / `modify_count` | Incremented by `ReviewAgent` |
+| `trust_score` / `usage_count` | Reserved for downstream ranking |
+
+External agents that **execute** a skill should immediately report the outcome
+via `POST /entries/{id}/feedback` (verdict `works` or `bugged`). The
+`MaintenanceAgent` regularly sweeps for `unverified`, `bugged`, and
+`needs_generalization` entries and proposes fixes; the `GraphAgent` exposes
+`submit_feedback`, `list_by_verification`, and `list_needs_generalization`
+tools so an LLM can do the same.
+
+### Abstraction guard
+
+`create_entry` runs a heuristic that flags titles containing concrete
+chemical formulas (`H2O`, `TiO2`, `TiO2/SrTiO3`) and any title that overlaps
+an existing one. The new entry is still created, but with
+`metadata.needs_generalization = True` so it surfaces in maintenance sweeps.
+The agent system prompt gives BAD/GOOD examples — prefer
+**`Build molecule from formula`** over **`Build H2O`**, and
+**`Material interface construction`** over **`TiO2/SrTiO3 Interface`**.
+
+`build_material_interface_workflow` is now deprecated for this reason and
+returns an error explaining the generic alternative.
 
 ---
 
@@ -198,7 +235,8 @@ curl http://<host>:<port>/remote
 | `GET` | `/remote/graph` | Graph stats + full node/edge dump |
 | `GET` | `/remote/entry/{id}` | Entry by ID, slug, or alias |
 | `GET` | `/remote/entry/{id}/related` | Related entries via BFS (`?depth=1&relation=`) |
-| `POST` | `/remote/feedback` | Submit feedback as a memory trace |
+| `POST` | `/remote/feedback` | Free-form feedback trace; optionally also updates an entry's verification (pass `entry_id` + `verdict`) |
+| `POST` | `/entries/{id}/feedback` | Direct per-entry verification feedback |
 | `DELETE` | `/remote/session/{id}` | Clear a session's chat history |
 
 ### Chat (one-shot)
@@ -247,19 +285,45 @@ curl "http://<host>:<port>/remote/search?q=ase&tags=python,simulation"
 
 ### Feedback / observations
 
-Remote agents can store feedback or observations as memory traces, which can
-later be promoted to full knowledge entries:
+There are **two complementary feedback channels**:
+
+**(a) Per-entry verification feedback** — updates the entry's
+`verification_status` (one of `unverified`, `self_tested`, `peer_reviewed`,
+`community_tested`, `bugged`, `deprecated`) and appends to its `feedback_log`.
+This is how the graph self-evolves — a node that an external agent has run
+and confirmed working will be trusted higher next time.
+
+```bash
+# Verdicts: works | peer_works | bugged | deprecated | unclear
+curl -X POST http://<host>:<port>/entries/<id-or-slug>/feedback \
+     -H "Content-Type: application/json" \
+     -d '{
+       "verdict": "works",
+       "note": "Ran on H2O, energy converged in 12 steps",
+       "evidence": "log link or excerpt",
+       "agent_id": "matcreator-runner-1"
+     }'
+```
+
+**(b) Free-form session feedback** — stored as a MemGraph trace; can later be
+promoted to a full entry. Optionally also routes to (a) when you pass
+`entry_id` and `verdict`:
 
 ```bash
 curl -X POST http://<host>:<port>/remote/feedback \
      -H "Content-Type: application/json" \
      -d '{
        "session_id": "agent-42",
-       "content": "The MACE entry is missing a link to the relaxation workflow",
+       "content": "MACE relaxation diverged on Cu surfaces",
        "tags": ["feedback", "graph-quality"],
-       "success": null
+       "entry_id": "mace-relaxation",
+       "verdict": "bugged",
+       "agent_id": "matcreator-runner-1"
      }'
 ```
+
+The `MaintenanceAgent` exposes `list_unverified()`, `list_bugged()`, and
+`list_needs_generalization()` so it can sweep for entries needing attention.
 
 Promote feedback traces to entries via `POST /mem/{session_id}/{mem_id}/promote`.
 

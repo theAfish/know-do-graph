@@ -33,11 +33,38 @@ scripts, materials, material interfaces, and more.
 - Titles must be short, canonical, and human-readable (3–7 words preferred).
 - Do NOT embed abbreviations or acronyms inside parentheses in the title (e.g. avoid
   "Density Functional Theory (DFT)"). Instead put the acronym in `aliases`.
-- Do NOT prefix every RDKit capability with "RDKit "; use the `tags` field and a
-  `dependency` edge to the RDKit tool node instead.
-- Tags must be lowercase, hyphenated, and domain-specific. Avoid capitalised tags
-  (e.g. use "rdkit" not "RDKit", "machine-learning" not "Machine Learning").
-- Prefer broad, reusable titles over highly specific ones.
+- Tags must be lowercase, hyphenated, and domain-specific.
+
+## Abstraction rule (CRITICAL — read carefully)
+Skill nodes should describe a **reusable capability**, not a single concrete
+instance. Concrete instances belong in the `content` (as examples) or as a
+parameter, NOT as their own node.
+
+  BAD:  "Build H2O molecule", "Build CH4 molecule", "Build NH3 molecule"
+        → three near-identical nodes that pollute the graph.
+  GOOD: One node "Build molecule from formula" whose content explains the
+        general procedure and lists examples (H2O, CH4, NH3).
+
+  BAD:  "TiO2/SrTiO3 Interface", "MgO/Fe Interface", "GaN/AlN Interface"
+        → one node per material pair.
+  GOOD: One "Material interface construction" capability node + one
+        "Slab-stacking procedure" node, parameterised over material formulas.
+
+  Exception: a specific instance is worth its own node ONLY when (a) it has
+  unique constraints/data not derivable from the general procedure, OR (b) it
+  is a famous/canonical reference that other procedures cite.
+
+Before calling `create_entry`:
+  1. Call `find_similar_nodes` with both the specific title AND a generalised
+     version (e.g. for "Build H2O", also search "build molecule").
+  2. If a generic match exists, do NOT create a new node — either link to the
+     existing one or extend its content with the new example.
+  3. If no generic match exists, ask yourself: "Could a sibling node for a
+     different parameter value exist?" If yes, create the **generic** node, not
+     the specific one.
+
+`create_entry` will set a `needs_generalization` flag on any node whose title
+overlaps an existing one — treat that as a signal to merge or rename.
 
 ## Entry types
 - **capability** – what a system/tool can do; also used for material interfaces, known constructs, and runnable scripts (when `script_language` is set in metadata).
@@ -52,31 +79,32 @@ scripts, materials, material interfaces, and more.
 - **memory** – operational memory trace.
 - **generic** – catch-all for entries that do not fit above.
 
+## Verification & feedback
+Every node carries `verification_status` (unverified | self_tested |
+peer_reviewed | community_tested | bugged | deprecated). New nodes default to
+`unverified`. When you or an external agent confirms a node works (or fails),
+call `submit_feedback` with a verdict — this is how the graph self-evolves.
+
 ## Script workflow
 Scripts are **capability** entries with `script_language` set in metadata.
-1. Use ``create_script_entry`` to add runnable scripts (Python, bash, Julia, etc.).
-2. Link scripts to the procedures/capabilities they implement via ``attach_script_to_entry``.
+1. Use ``create_script_entry`` to add runnable scripts.
+2. Link scripts to procedures/capabilities via ``attach_script_to_entry``.
 3. Any entry with `script_language` set can be downloaded at ``GET /entries/{id}/download``.
-
-## Material interface workflow
-Materials are **data** entries; interfaces are **capability** entries.
-1. Create material (data) entries with ``create_material_entry``.
-2. Use ``build_material_interface_workflow`` to scaffold: interface (capability) + procedure + data nodes.
-3. Attach relevant scripts (relaxation, lattice-matching, etc.) to the procedure node.
 
 ## Workflow for adding new knowledge
 1. Call ``get_graph_overview`` to orient yourself.
-2. Call ``find_similar_nodes`` for every concept you intend to create.
-3. Choose the most appropriate ``entry_type``; write clean lowercase hyphenated tags;
-   put all abbreviations in ``aliases``.
+2. For every concept you intend to create, search for both the specific and
+   generalised name with ``find_similar_nodes``.
+3. Choose the most appropriate ``entry_type``; write clean lowercase
+   hyphenated tags; put abbreviations in ``aliases``.
 4. Wire meaningful typed edges. Do not leave nodes isolated.
 5. Resolve wikilinks when done.
 
 ## Workflow for restructuring / cleaning
 - Use ``find_similar_nodes`` to detect near-duplicates before merging.
 - Use ``merge_entries`` to consolidate duplicates.
+- Use ``list_needs_generalization`` to find nodes flagged as too specific.
 - Fix titles that contain parenthetical acronyms by moving the acronym to aliases.
-- Normalise tags to lowercase on every node you touch.
 
 Always confirm actions taken and briefly summarise what you did.
 """

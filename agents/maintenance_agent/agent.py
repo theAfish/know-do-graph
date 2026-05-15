@@ -96,3 +96,35 @@ class MaintenanceAgent:
         self._graph.add_entry(saved)
         mg.mark_promoted(mem_id, saved.id)
         return saved
+
+    # ------------------------------------------------------------------
+    # Query helpers — surface entries that need attention
+    # ------------------------------------------------------------------
+
+    def list_unverified(self, limit: int = 100) -> list[Entry]:
+        """Return entries whose verification_status is 'unverified'."""
+        from core.schemas.entry import VerificationStatus
+
+        with SessionLocal() as db:
+            entries = EntryRepository(db).get_all()
+        return [
+            e for e in entries
+            if e.metadata.verification_status == VerificationStatus.unverified
+        ][:limit]
+
+    def list_bugged(self, limit: int = 100) -> list[Entry]:
+        """Return entries flagged as bugged via feedback."""
+        from core.schemas.entry import VerificationStatus
+
+        with SessionLocal() as db:
+            entries = EntryRepository(db).get_all()
+        return [
+            e for e in entries
+            if e.metadata.verification_status == VerificationStatus.bugged
+        ][:limit]
+
+    def list_needs_generalization(self, limit: int = 100) -> list[Entry]:
+        """Return entries flagged by the abstraction check."""
+        with SessionLocal() as db:
+            entries = EntryRepository(db).get_all()
+        return [e for e in entries if e.metadata.needs_generalization][:limit]

@@ -23,6 +23,41 @@ def _slug(title: str) -> str:
     return re.sub(r"-+", "-", slug).strip("-")
 
 
+# Tokens that suggest a title is a *concrete instance* of a more general skill
+# (chemical formulas, two-formula interfaces, "build X molecule", etc.).
+# Used by create_entry's soft abstraction check.
+_CONCRETE_INSTANCE_PATTERNS = [
+    re.compile(r"\b[A-Z][a-zA-Z]*\d+[A-Za-z]*\d*\b"),         # CH4, H2O, TiO2, SrTiO3
+    re.compile(r"\b[A-Z][A-Za-z0-9]+/[A-Z][A-Za-z0-9]+\b"),   # TiO2/SrTiO3
+    re.compile(r"^build\s+[A-Z][a-zA-Z]*\d+"),                # "Build H2O" (formula must contain a digit)
+]
+
+
+def _looks_overly_specific(title: str) -> bool:
+    """Heuristic: True if *title* mentions a concrete formula/material pair."""
+    return any(p.search(title) for p in _CONCRETE_INSTANCE_PATTERNS)
+
+
+def _check_generalization(title: str, db: Any) -> dict:
+    """Soft abstraction check.
+
+    Returns ``{needs_generalization: bool, similar: [...], suggestion: str}``.
+    Looks for existing nodes whose titles overlap the proposed *title* (case-
+    insensitive token overlap) — those are likely the generic ancestor or a
+    near-duplicate.
+    """
+    from core.retrieval.retrieval import RetrievalEngine
+    from core import app_state
+
+    engine = RetrievalEngine(db, app_state.graph)
+    candidates = engine.search_entries(query=title, limit=5)
+    flag = _looks_overly_specific(title) or len(candidates) > 0
+    return {
+        "needs_generalization": flag,
+        "similar": [{"id": e.id, "title": e.title, "type": e.entry_type.value} for e in candidates],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Node / Entry tools
 # ---------------------------------------------------------------------------
@@ -37,24 +72,42 @@ def create_entry(
     source_provenance: str | None = None,
     graph: Any = None,
 ) -> dict:
-    """Create a new knowledge entry (node) in the graph."""
+    """Create a new knowledge entry (node) in the graph.
+
+    Performs a soft abstraction check: if *title* looks overly specific (mentions
+    a concrete formula/material pair) or strongly overlaps an existing node, the
+    new entry is created with ``metadata.needs_generalization = True`` and the
+    response includes the similar candidates so the agent can decide to merge
+    or rename instead.
+    """
     from core.schemas.entry import Entry, EntryMetadata, EntryType
     from core.storage.database import SessionLocal
     from core.storage.repository import EntryRepository
 
-    entry = Entry(
-        title=title,
-        content=content,
-        entry_type=EntryType(entry_type),
-        tags=tags or [],
-        aliases=aliases or [],
-        metadata=EntryMetadata(source_provenance=source_provenance),
-    )
     with SessionLocal() as db:
+        check = _check_generalization(title, db)
+        meta = EntryMetadata(
+            source_provenance=source_provenance,
+            needs_generalization=check["needs_generalization"],
+        )
+        entry = Entry(
+            title=title,
+            content=content,
+            entry_type=EntryType(entry_type),
+            tags=tags or [],
+            aliases=aliases or [],
+            metadata=meta,
+        )
         saved = EntryRepository(db).create(entry)
     if graph is not None:
         graph.add_entry(saved)
-    return {"id": saved.id, "slug": saved.slug, "title": saved.title}
+    return {
+        "id": saved.id,
+        "slug": saved.slug,
+        "title": saved.title,
+        "needs_generalization": check["needs_generalization"],
+        "similar_existing": check["similar"],
+    }
 
 
 def update_entry(
@@ -638,122 +691,145 @@ def build_material_interface_workflow(
     tags: list[str] | None = None,
     graph: Any = None,
 ) -> dict:
-    """Create a structured workflow chain for building a material interface between two materials.
+    """DEPRECATED — produces overly specific per-material-pair nodes.
 
-    Creates three linked entries:
-      1. A *material_interface* node representing the interface concept.
-      2. A *procedure* node describing the construction method (e.g. slab stacking,
-         lattice matching, supercell creation).
-      3. A *data* node as a placeholder for resulting interface structure data.
-
-    Edges: workflow → procedure (execution_pathway), procedure → interface (generates),
-           interface → data (provenance).
-
-    Returns the IDs of all created nodes.
+    Use the generic ``Material interface construction`` capability node plus
+    ``Slab-stacking procedure`` (or similar) and add the specific pair as either
+    (a) a `data` example linked via ``provenance``, or (b) a parameterised note
+    in the procedure's content. Returns an error directing the agent to do so.
     """
-    import uuid
-    from core.schemas.edge import Edge, EdgeRelation
-    from core.schemas.entry import Entry, EntryMetadata, EntryType
+    return {
+        "error": (
+            "build_material_interface_workflow is deprecated because it creates "
+            "one node per material pair. Instead: ensure a generic "
+            "'Material interface construction' capability and a "
+            "'Slab-stacking procedure' node exist (create them if missing), "
+            f"then add a single data entry for the {material_a}/{material_b} "
+            "instance with provenance edges to those generic nodes."
+        ),
+        "suggested_generic_titles": [
+            "Material interface construction",
+            f"{method.replace('_', ' ').title()} procedure",
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Verification feedback tools
+# ---------------------------------------------------------------------------
+
+
+def submit_feedback(
+    entry_id: str,
+    verdict: str,
+    note: str = "",
+    evidence: str = "",
+    agent_id: str = "unknown",
+    graph: Any = None,
+) -> dict:
+    """Record correctness feedback on a node and update its verification_status.
+
+    Parameters
+    ----------
+    verdict:
+        One of ``works`` (→ self_tested), ``peer_works`` (→ peer_reviewed),
+        ``bugged`` (→ bugged), ``deprecated`` (→ deprecated), ``unclear``
+        (records the note without changing status).
+    note, evidence:
+        Free-text describing the test/observation. Stored in the entry's
+        ``metadata.feedback_log`` for the maintenance agent to consult.
+    agent_id:
+        Identifier of the agent or human that submitted the feedback.
+    """
+    from datetime import datetime, timezone
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.entry import VerificationStatus
     from core.storage.database import SessionLocal
-    from core.storage.repository import EdgeRepository, EntryRepository
+    from core.storage.repository import EntryRepository
 
-    base_tags = list(dict.fromkeys(["materials-interface", "computational-materials"] + (tags or [])))
-    description_text = description or (
-        f"Interface between {material_a} and {material_b} constructed via {method}."
-    )
+    verdict_to_status = {
+        "works": VerificationStatus.self_tested,
+        "peer_works": VerificationStatus.peer_reviewed,
+        "bugged": VerificationStatus.bugged,
+        "deprecated": VerificationStatus.deprecated,
+        "unclear": None,
+    }
+    if verdict not in verdict_to_status:
+        return {"error": f"verdict must be one of {sorted(verdict_to_status)}"}
 
-    # 1. Interface node — typed as capability (it IS a known capability/skill)
-    interface_entry = Entry(
-        title=f"{material_a}/{material_b} Interface",
-        content=(
-            f"## {material_a}/{material_b} Interface\n\n"
-            f"{description_text}\n\n"
-            f"Construction method: {method}\n\n"
-            f"### Key considerations\n"
-            f"- Lattice mismatch between [[{material_a}]] and [[{material_b}]]\n"
-            f"- Surface termination and reconstruction\n"
-            f"- Charge neutrality and stoichiometry at the interface\n"
-            f"- Band alignment and electronic structure\n"
-        ),
-        entry_type=EntryType.capability,
-        tags=base_tags,
-        metadata=EntryMetadata(),
-    )
-
-    # 2. Procedure node
-    procedure_entry = Entry(
-        title=f"Build {material_a}/{material_b} Interface via {method.replace('_', ' ').title()}",
-        content=(
-            f"## Construction Procedure\n\n"
-            f"Step-by-step procedure for building a [[{material_a}/{material_b} Interface]] "
-            f"using the *{method.replace('_', ' ')}* approach.\n\n"
-            f"### Steps\n"
-            f"1. Obtain or generate bulk structures for [[{material_a}]] and [[{material_b}]].\n"
-            f"2. Select appropriate surface facets and create slab models.\n"
-            f"3. Match lattice parameters (strain or supercell expansion).\n"
-            f"4. Stack the slabs with appropriate vacuum spacing.\n"
-            f"5. Relax the interface geometry.\n"
-            f"6. Validate structure and compute interface energy.\n"
-        ),
-        entry_type=EntryType.procedure,
-        tags=base_tags + ["construction"],
-        metadata=EntryMetadata(),
-    )
-
-    # 3. Data placeholder node
-    data_entry = Entry(
-        title=f"{material_a}/{material_b} Interface Structure Data",
-        content=(
-            f"Structural data and calculation results for the "
-            f"[[{material_a}/{material_b} Interface]].\n\n"
-            f"Expected outputs:\n"
-            f"- Interface geometry file (CIF / POSCAR / XYZ)\n"
-            f"- Interface energy (J/m²)\n"
-            f"- Band alignment (eV)\n"
-            f"- Relaxed atomic positions\n"
-        ),
-        entry_type=EntryType.data,
-        tags=base_tags + ["structure-data"],
-        metadata=EntryMetadata(),
-    )
-
+    g = graph or app_state.graph
     with SessionLocal() as db:
-        repo = EntryRepository(db)
-        edge_repo = EdgeRepository(db)
+        engine = RetrievalEngine(db, g)
+        entry = engine.resolve_identifier(entry_id)
+        if entry is None:
+            return {"error": f"Entry '{entry_id}' not found."}
 
-        saved_interface = repo.create(interface_entry)
-        saved_procedure = repo.create(procedure_entry)
-        saved_data = repo.create(data_entry)
-
-        # procedure → interface (execution_pathway: running the procedure produces the interface)
-        e1 = Edge(source_id=saved_procedure.id, target_id=saved_interface.id, relation=EdgeRelation.execution_pathway)
-        # interface → data (provenance: the interface is the source of the data)
-        e2 = Edge(source_id=saved_interface.id, target_id=saved_data.id, relation=EdgeRelation.provenance)
-        # procedure → data (generated_from perspective: data is generated by procedure)
-        e3 = Edge(source_id=saved_data.id, target_id=saved_procedure.id, relation=EdgeRelation.generated_from)
-
-        saved_e1 = edge_repo.create(e1)
-        saved_e2 = edge_repo.create(e2)
-        saved_e3 = edge_repo.create(e3)
-
-    g = graph
-    if g is not None:
-        g.add_entry(saved_interface)
-        g.add_entry(saved_procedure)
-        g.add_entry(saved_data)
-        g.add_edge(saved_e1)
-        g.add_edge(saved_e2)
-        g.add_edge(saved_e3)
+        entry.metadata.feedback_log.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "agent_id": agent_id,
+            "verdict": verdict,
+            "note": note,
+            "evidence": evidence,
+        })
+        new_status = verdict_to_status[verdict]
+        if new_status is not None:
+            entry.metadata.verification_status = new_status
+        EntryRepository(db).update(entry)
 
     return {
-        "interface_id": saved_interface.id,
-        "interface_slug": saved_interface.slug,
-        "procedure_id": saved_procedure.id,
-        "procedure_slug": saved_procedure.slug,
-        "data_id": saved_data.id,
-        "data_slug": saved_data.slug,
-        "edges_created": 3,
+        "entry_id": entry.id,
+        "verification_status": entry.metadata.verification_status.value,
+        "feedback_count": len(entry.metadata.feedback_log),
     }
+
+
+def list_by_verification(
+    status: str = "unverified",
+    limit: int = 50,
+    graph: Any = None,
+) -> list[dict]:
+    """List nodes filtered by verification_status (unverified | bugged | ...)."""
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        entries = engine.list_entries(limit=max(limit * 5, 500))
+    matching = [
+        e for e in entries
+        if e.metadata.verification_status and e.metadata.verification_status.value == status
+    ]
+    return [
+        {
+            "id": e.id,
+            "slug": e.slug,
+            "title": e.title,
+            "type": e.entry_type.value,
+            "verification_status": e.metadata.verification_status.value,
+            "feedback_count": len(e.metadata.feedback_log),
+        }
+        for e in matching[:limit]
+    ]
+
+
+def list_needs_generalization(limit: int = 50, graph: Any = None) -> list[dict]:
+    """List nodes flagged as overly specific by the abstraction check."""
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        entries = engine.list_entries(limit=max(limit * 5, 500))
+    matching = [e for e in entries if e.metadata.needs_generalization]
+    return [
+        {"id": e.id, "slug": e.slug, "title": e.title, "type": e.entry_type.value}
+        for e in matching[:limit]
+    ]
 
 
 def create_material_entry(
@@ -1256,25 +1332,82 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "build_material_interface_workflow",
             "description": (
-                "Create a full workflow chain in the graph for building a material interface "
-                "between two materials. Produces three linked entries: a capability node for the interface, "
-                "a construction procedure node, and a data placeholder node, wired with "
-                "appropriate edges."
+                "DEPRECATED. Returns an error explaining how to use the generic "
+                "'Material interface construction' capability + slab-stacking procedure "
+                "instead of creating one node per material pair."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "material_a": {"type": "string", "description": "Formula or name of the first material (e.g. 'TiO2')"},
-                    "material_b": {"type": "string", "description": "Formula or name of the second material (e.g. 'SrTiO3')"},
-                    "method": {
-                        "type": "string",
-                        "description": "Construction method: slab_stacking, lattice_matching, supercell, epitaxial_growth",
-                        "default": "slab_stacking",
-                    },
-                    "description": {"type": "string", "description": "Additional context or motivation for this interface"},
+                    "material_a": {"type": "string"},
+                    "material_b": {"type": "string"},
+                    "method": {"type": "string", "default": "slab_stacking"},
+                    "description": {"type": "string"},
                     "tags": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["material_a", "material_b"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_feedback",
+            "description": (
+                "Record correctness feedback on a node. Updates verification_status "
+                "and appends to the node's feedback_log. Use after testing a node, "
+                "or when an external agent reports success/failure. "
+                "verdict: works | peer_works | bugged | deprecated | unclear."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entry_id": {"type": "string", "description": "Node ID or slug"},
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["works", "peer_works", "bugged", "deprecated", "unclear"],
+                    },
+                    "note": {"type": "string", "description": "Short human-readable note"},
+                    "evidence": {"type": "string", "description": "Output, error message, or link"},
+                    "agent_id": {"type": "string", "description": "Identifier of the reporter"},
+                },
+                "required": ["entry_id", "verdict"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_by_verification",
+            "description": (
+                "List nodes filtered by verification_status. "
+                "Use to find unverified or bugged nodes that need attention."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["unverified", "self_tested", "peer_reviewed",
+                                 "community_tested", "bugged", "deprecated"],
+                        "default": "unverified",
+                    },
+                    "limit": {"type": "integer", "default": 50},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_needs_generalization",
+            "description": (
+                "List nodes flagged as overly specific by the abstraction check. "
+                "These are candidates for merging into a generic capability."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "default": 50}},
             },
         },
     },
@@ -1306,4 +1439,7 @@ TOOL_DISPATCH: dict[str, Any] = {
     "build_material_interface_workflow": build_material_interface_workflow,
     "create_material_entry": create_material_entry,
     "attach_script_to_entry": attach_script_to_entry,
+    "submit_feedback": submit_feedback,
+    "list_by_verification": list_by_verification,
+    "list_needs_generalization": list_needs_generalization,
 }

@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, Response
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.app_state import graph as _graph
@@ -147,3 +148,37 @@ def _media_type_for_language(language: str) -> str:
         "r": "text/x-r",
     }
     return mapping.get(language.lower(), "text/plain")
+
+
+# ── Feedback / verification ──────────────────────────────────────────────────
+
+
+class FeedbackBody(BaseModel):
+    verdict: str  # works | peer_works | bugged | deprecated | unclear
+    note: str = ""
+    evidence: str = ""
+    agent_id: str = "external"
+
+
+@router.post("/{entry_id}/feedback", status_code=201)
+def post_entry_feedback(entry_id: str, body: FeedbackBody, db: Session = Depends(get_db)):
+    """Record correctness feedback on an entry.
+
+    Updates ``metadata.verification_status`` according to *verdict* and appends
+    the event (timestamp + agent_id + note + evidence) to
+    ``metadata.feedback_log``. This is the canonical channel for external
+    agents to flag a node as working or bugged.
+    """
+    from agents.graph_agent.tools import submit_feedback
+
+    result = submit_feedback(
+        entry_id=entry_id,
+        verdict=body.verdict,
+        note=body.note,
+        evidence=body.evidence,
+        agent_id=body.agent_id,
+        graph=_graph,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result

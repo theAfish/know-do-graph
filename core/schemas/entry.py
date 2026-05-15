@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class EntryType(str, Enum):
@@ -31,10 +31,20 @@ class RefinementStatus(str, Enum):
 
 
 class VerificationStatus(str, Enum):
+    """Lifecycle of correctness checking for a node.
+
+    unverified  — created by an agent, never validated.
+    self_tested — author/agent reports it works (low confidence).
+    peer_reviewed — another agent or human reviewed it.
+    community_tested — multiple independent successes recorded.
+    bugged       — known broken; needs fix.
+    deprecated   — superseded; do not use.
+    """
     unverified = "unverified"
-    peer_reviewed = "peer_reviewed"
     self_tested = "self_tested"
+    peer_reviewed = "peer_reviewed"
     community_tested = "community_tested"
+    bugged = "bugged"
     deprecated = "deprecated"
 
 
@@ -45,7 +55,19 @@ class EntryMetadata(BaseModel):
     refinement_status: RefinementStatus = RefinementStatus.raw
     usage_count: int = 0
     trust_score: Optional[float] = None
-    verification_status: Optional[VerificationStatus] = None
+    verification_status: VerificationStatus = VerificationStatus.unverified
+    # Set by create_entry when a more-generic existing node is found.
+    # MaintenanceAgent uses this to pick candidates for abstraction.
+    needs_generalization: bool = False
+    # Append-only log of external/internal feedback events.
+    # Each item: {timestamp, agent_id, verdict, note, evidence}
+    feedback_log: list[dict] = Field(default_factory=list)
+
+    @field_validator("verification_status", mode="before")
+    @classmethod
+    def _default_verification(cls, v):
+        # Tolerate legacy rows where verification_status was stored as null.
+        return VerificationStatus.unverified if v is None else v
     # Script-specific metadata
     script_language: Optional[str] = None      # e.g. "python", "bash", "julia"
     script_requirements: list[str] = Field(default_factory=list)  # pip/conda packages

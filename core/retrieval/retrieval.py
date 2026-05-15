@@ -101,13 +101,20 @@ class RetrievalEngine:
                 continue
             entry = Entry(**d)
             if tokens:
-                haystack = " ".join([
-                    (d.get("title") or ""),
-                    (d.get("content") or ""),
-                    str(d.get("aliases") or ""),
-                    str(d.get("tags") or ""),
-                ]).lower()
-                score = sum(1 for token in tokens if token in haystack)
+                title = (d.get("title") or "").lower()
+                aliases = str(d.get("aliases") or "").lower()
+                tags_str = str(d.get("tags") or "").lower()
+                content = (d.get("content") or "").lower()
+                score = 0
+                for token in tokens:
+                    if token in title:
+                        score += 10
+                    if token in aliases:
+                        score += 5
+                    if token in tags_str:
+                        score += 3
+                    if token in content and token not in title:
+                        score += 1
             else:
                 score = 0
             scored.append((score, entry))
