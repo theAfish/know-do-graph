@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import asyncio
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from core.app_state import graph as _graph
 
@@ -53,3 +56,36 @@ def get_neighbors(
 ) -> list[dict]:
     """Return immediate neighbors of *entry_id*."""
     return _graph.get_neighbors(entry_id, direction=direction)
+
+
+@router.get("/events")
+async def graph_events(request: Request):
+    """Server-Sent Events stream — pushes graph change notifications in real time.
+
+    Events have the shape: ``{"type": "node_added"|"node_updated"|"node_removed", "data": {...}}``
+    A ``{"type": "ping"}`` keepalive is emitted every ~25 s.
+    """
+    from core import events as _events
+
+    async def generator():
+        q = _events.subscribe()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=25)
+                    yield f"data: {msg}\n\n"
+                except asyncio.TimeoutError:
+                    yield 'data: {"type":"ping"}\n\n'
+        finally:
+            _events.unsubscribe(q)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

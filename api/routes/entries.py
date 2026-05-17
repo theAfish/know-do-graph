@@ -7,6 +7,7 @@ from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from core import events as _events
 from core.app_state import graph as _graph
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
@@ -62,6 +63,13 @@ def create_entry(entry: Entry, db: Session = Depends(get_db)):
     """Create a new entry."""
     saved = EntryRepository(db).create(entry)
     _graph.add_entry(saved)
+    _events.emit("node_added", {
+        "id": saved.id,
+        "title": saved.title,
+        "slug": saved.slug,
+        "entry_type": saved.entry_type.value if hasattr(saved.entry_type, "value") else saved.entry_type,
+        "tags": saved.tags,
+    })
     return saved.model_dump(mode="json")
 
 
@@ -73,6 +81,13 @@ def update_entry(entry_id: str, entry: Entry, db: Session = Depends(get_db)):
     if not updated:
         raise HTTPException(status_code=404, detail="Entry not found")
     _graph.add_entry(updated)
+    _events.emit("node_updated", {
+        "id": updated.id,
+        "title": updated.title,
+        "slug": updated.slug,
+        "entry_type": updated.entry_type.value if hasattr(updated.entry_type, "value") else updated.entry_type,
+        "tags": updated.tags,
+    })
     return updated.model_dump(mode="json")
 
 
@@ -82,6 +97,7 @@ def delete_entry(entry_id: str, db: Session = Depends(get_db)):
     if not EntryRepository(db).delete(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
     _graph.remove_entry(entry_id)
+    _events.emit("node_removed", {"id": entry_id})
 
 
 @router.get("/{entry_id}/related", response_model=list[dict])

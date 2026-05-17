@@ -221,6 +221,15 @@
       display: none; background: #3d0b0b; border-bottom: 1px solid #cf222e;
       color: #ffa198; padding: 8px 16px; font-size: 13px; text-align: center;
     }
+
+    /* Live-update badge */
+    #live-badge {
+      font-size: 11px; padding: 2px 8px; border-radius: 10px;
+      border: 1px solid #30363d; color: #8b949e; white-space: nowrap;
+      transition: background 0.3s, color 0.3s;
+    }
+    #live-badge.connected { border-color: #238636; color: #3fb950; }
+    #live-badge.updating  { background: #1f6feb22; border-color: #1f6feb; color: #79c0ff; }
   </style>
 </head>
 <body>
@@ -229,7 +238,7 @@
 
 <div id="toolbar">
   <h1>Know-Do Graph</h1>
-  <input type="search" id="search-input" placeholder="Search nodes…" />
+  <input type="search" id="search-input" placeholder="Search title, tags, content… (use #tag)" />
   <select id="type-filter">
     <option value="">All types</option>
     <option value="capability">capability</option>
@@ -246,6 +255,7 @@
   </select>
   <button id="reset-view">Reset view</button>
   <button id="toggle-labels">Labels: on</button>
+  <span id="live-badge">● live</span>
   <span id="stats">Loading…</span>
 </div>
 
@@ -536,7 +546,7 @@ window.focusNodeBySlug = function(slug) {
 };
 
 // ── D3 graph render ────────────────────────────────────────────────────────────
-function render(nodes, edges) {
+function render(nodes, edges, initialAlpha = 0.8) {
   allNodes = nodes;
   allEdges = edges;
 
@@ -613,7 +623,9 @@ function render(nodes, edges) {
   svgSel.on('click', () => { hideTooltip(); closeDetail(); });
 
   // Force simulation
+  if (simulation) simulation.stop();
   simulation = d3.forceSimulation(nodes)
+    .alpha(initialAlpha)
     .force('link',   d3.forceLink(edges).id(d => d.id).distance(90))
     .force('charge', d3.forceManyBody().strength(-220))
     .force('center', d3.forceCenter(svgEl.clientWidth / 2, svgEl.clientHeight / 2))
@@ -669,29 +681,95 @@ document.getElementById('detail-close').addEventListener('click', closeDetail);
 
 // Search
 document.getElementById('search-input').addEventListener('input', function() {
-  const q = this.value.toLowerCase().trim();
-  applyFilters(q, document.getElementById('type-filter').value);
+  const q = this.value.trim();
+  const type = document.getElementById('type-filter').value;
+  applyFilters(q, type);
+  // Also run API content search (debounced) when query is long enough
+  if (q.length >= 2 && !q.startsWith('#')) {
+    scheduleApiSearch(q, type);
+  } else {
+    _apiMatchIds = null; // clear API results when query is short/tag-mode
+  }
 });
 document.getElementById('type-filter').addEventListener('change', function() {
-  const q = document.getElementById('search-input').value.toLowerCase().trim();
+  const q = document.getElementById('search-input').value.trim();
   applyFilters(q, this.value);
 });
 
+// API-backed content search (catches aliases, content keywords not in graph node data)
+let _apiMatchIds = null;
+let _apiSearchTimer = null;
+function scheduleApiSearch(q, type) {
+  clearTimeout(_apiSearchTimer);
+  _apiSearchTimer = setTimeout(() => apiSearch(q, type), 350);
+}
+async function apiSearch(q, type) {
+  try {
+    const params = new URLSearchParams({ q, limit: 200 });
+    if (type) params.set('entry_type', type);
+    const r = await fetch(`${API}/entries/search?${params}`);
+    if (!r.ok) return;
+    const results = await r.json();
+    _apiMatchIds = new Set(results.map(e => e.id));
+    // Re-apply filters to reflect API results
+    const currentQ = document.getElementById('search-input').value.trim();
+    applyFilters(currentQ, document.getElementById('type-filter').value);
+  } catch (e) {
+    console.warn('API search failed:', e);
+  }
+}
+
 function applyFilters(q, type) {
   if (!sceneSel) return;
+
+  // Tag-specific mode: "#python" → show nodes tagged with "python"
+  let tagFilter = null;
+  let textQ = q.toLowerCase();
+  if (q.startsWith('#')) {
+    tagFilter = q.slice(1).toLowerCase().trim();
+    textQ = '';
+  }
+
+  const visible = new Set();
+
   sceneSel.selectAll('.node').style('display', d => {
-    const matchQ    = !q    || d.title.toLowerCase().includes(q) || (d.slug || '').includes(q);
+    let matchQ;
+    if (tagFilter) {
+      matchQ = Array.isArray(d.tags) && d.tags.some(t => t.toLowerCase().includes(tagFilter));
+    } else if (textQ) {
+      const inTitle = d.title.toLowerCase().includes(textQ);
+      const inSlug  = (d.slug || '').toLowerCase().includes(textQ);
+      const inTags  = Array.isArray(d.tags) && d.tags.some(t => t.toLowerCase().includes(textQ));
+      const inApi   = _apiMatchIds ? _apiMatchIds.has(d.id) : false;
+      matchQ = inTitle || inSlug || inTags || inApi;
+    } else {
+      matchQ = true;
+    }
     const matchType = !type || d.entry_type === type;
-    return (matchQ && matchType) ? null : 'none';
+    const show = matchQ && matchType;
+    if (show) visible.add(d.id);
+    return show ? null : 'none';
   });
+
+  // Show edge if both endpoints are visible (keeps graph clean while filtering)
   sceneSel.selectAll('.edge').style('display', e => {
-    const si = allNodes.find(n => n.id === (e.source.id || e.source));
-    const ti = allNodes.find(n => n.id === (e.target.id || e.target));
-    if (!si || !ti) return 'none';
-    const matchQ    = !q    || si.title.toLowerCase().includes(q) || ti.title.toLowerCase().includes(q);
-    const matchType = !type || si.entry_type === type || ti.entry_type === type;
-    return (matchQ && matchType) ? null : 'none';
+    const si = e.source.id || e.source;
+    const ti = e.target.id || e.target;
+    return (visible.has(si) && visible.has(ti)) ? null : 'none';
   });
+  sceneSel.selectAll('.edge-label').style('display', e => {
+    const si = e.source.id || e.source;
+    const ti = e.target.id || e.target;
+    return (visible.has(si) && visible.has(ti)) ? null : 'none';
+  });
+
+  // Update stats to reflect filtered count
+  const total = allNodes.length;
+  const vis = visible.size;
+  document.getElementById('stats').textContent =
+    (vis < total && (textQ || tagFilter || type))
+      ? `${vis}/${total} nodes · ${allEdges.length} edges`
+      : `${total} nodes · ${allEdges.length} edges`;
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
@@ -700,6 +778,80 @@ function escHtml(s) {
 }
 function escAttr(s) {
   return String(s ?? '').replace(/'/g, "\\'");
+}
+
+// ── Soft-refresh (preserves node positions) ───────────────────────────────────
+async function softRefresh() {
+  // Snapshot current positions so existing nodes don't jump
+  const posMap = {};
+  allNodes.forEach(n => { if (n.x != null) posMap[n.id] = { x: n.x, y: n.y }; });
+
+  try {
+    const r = await fetch(`${API}/graph/full`);
+    if (!r.ok) return;
+    const data = await r.json();
+
+    // Restore positions for nodes that already existed
+    data.nodes.forEach(n => {
+      if (posMap[n.id]) { n.x = posMap[n.id].x; n.y = posMap[n.id].y; }
+    });
+
+    // Re-render with low alpha so settled nodes barely move
+    render(data.nodes, data.edges, 0.05);
+
+    // Re-apply current filters
+    const q    = document.getElementById('search-input').value.trim();
+    const type = document.getElementById('type-filter').value;
+    if (q || type) applyFilters(q, type);
+
+    // Re-highlight selected node (or close panel if deleted)
+    if (selectedId) {
+      if (data.nodes.find(n => n.id === selectedId)) highlightNode(selectedId);
+      else closeDetail();
+    }
+  } catch (e) {
+    console.warn('softRefresh failed:', e);
+  }
+}
+
+let _refreshDebounce = null;
+function scheduleRefresh() {
+  // Debounce: multiple rapid events coalesce into one refresh
+  clearTimeout(_refreshDebounce);
+  _refreshDebounce = setTimeout(softRefresh, 500);
+}
+
+// ── SSE live-update connection ────────────────────────────────────────────────
+const liveBadge = document.getElementById('live-badge');
+
+function connectSSE() {
+  const es = new EventSource(`${API}/graph/events`);
+
+  es.onopen = () => {
+    liveBadge.className = 'connected';
+    liveBadge.textContent = '● live';
+  };
+
+  es.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    if (msg.type === 'ping') return;
+    // Animate badge briefly then schedule a soft graph refresh
+    liveBadge.className = 'updating';
+    liveBadge.textContent = '↻ updating…';
+    scheduleRefresh();
+    setTimeout(() => {
+      liveBadge.className = 'connected';
+      liveBadge.textContent = '● live';
+    }, 1500);
+  };
+
+  es.onerror = () => {
+    liveBadge.className = '';
+    liveBadge.textContent = '○ reconnecting…';
+    es.close();
+    setTimeout(connectSSE, 5000); // retry after 5 s
+  };
 }
 
 // ── Fetch & boot ──────────────────────────────────────────────────────────────
@@ -718,6 +870,7 @@ async function loadGraph() {
 }
 
 loadGraph();
+connectSSE();
 </script>
 </body>
 </html>
