@@ -49,6 +49,7 @@ class EntryRepository:
             aliases=json.dumps(entry.aliases),
             metadata_json=json.dumps(entry.metadata.model_dump(mode="json")),
             internal_refs=json.dumps(entry.internal_refs),
+            scripts_json=json.dumps([s.model_dump() for s in entry.scripts]),
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
@@ -71,6 +72,7 @@ class EntryRepository:
         model.aliases = json.dumps(entry.aliases)
         model.metadata_json = json.dumps(entry.metadata.model_dump(mode="json"))
         model.internal_refs = json.dumps(entry.internal_refs)
+        model.scripts_json = json.dumps([s.model_dump() for s in entry.scripts])
         model.updated_at = datetime.utcnow()
         self._db.commit()
         self._db.refresh(model)

@@ -313,6 +313,8 @@ def remote_get_related(
     Optionally filter by ``relation`` (e.g. ``dependency``, ``wikilink``).
     """
     engine = RetrievalEngine(db, _graph)
+    if not engine.get_entry_by_id(entry_id):
+        raise HTTPException(status_code=404, detail="Entry not found")
     rel: Optional[EdgeRelation] = EdgeRelation(relation) if relation else None
     results = engine.get_related_entries(entry_id, depth=depth, relation=rel)
     return [e.model_dump(mode="json") for e in results]

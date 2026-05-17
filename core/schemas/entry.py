@@ -89,6 +89,15 @@ def _extract_wikilinks(content: str) -> list[str]:
     return _WIKILINK_RE.findall(content)
 
 
+class ScriptAttachment(BaseModel):
+    """An executable script stored directly on a node, separate from human-readable content."""
+    filename: str
+    language: str = "python"
+    content: str
+    requirements: list[str] = Field(default_factory=list)
+    description: str = ""
+
+
 class Entry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
@@ -99,6 +108,7 @@ class Entry(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     metadata: EntryMetadata = Field(default_factory=EntryMetadata)
     internal_refs: list[str] = Field(default_factory=list)
+    scripts: list[ScriptAttachment] = Field(default_factory=list)
 
     def model_post_init(self, __context: object) -> None:
         if not self.slug:

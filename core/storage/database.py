@@ -32,8 +32,12 @@ def init_db() -> None:
 
     # Migrate: add aliases column if it doesn't exist yet (SQLite only supports ADD COLUMN)
     with engine.connect() as conn:
-        try:
-            conn.execute(text("ALTER TABLE entries ADD COLUMN aliases TEXT DEFAULT '[]'"))
-            conn.commit()
-        except Exception:
-            pass  # column already exists
+        for col, default in [
+            ("aliases", "'[]'"),
+            ("scripts_json", "'[]'"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE entries ADD COLUMN {col} TEXT DEFAULT {default}"))
+                conn.commit()
+            except Exception:
+                pass  # column already exists

@@ -102,32 +102,64 @@ def get_edges(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     return [e.model_dump(mode="json") for e in engine.get_edges_for_entry(entry_id)]
 
 
+@router.get("/{entry_id}/scripts")
+def list_entry_scripts(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
+    """List all scripts attached to an entry (metadata only — no code bodies)."""
+    entry = engine.resolve_identifier(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return [
+        {
+            "filename": s.filename,
+            "language": s.language,
+            "requirements": s.requirements,
+            "description": s.description,
+            "download_url": f"/entries/{entry.id}/scripts/{s.filename}",
+        }
+        for s in entry.scripts
+    ]
+
+
+@router.get("/{entry_id}/scripts/{filename}")
+def download_entry_script(entry_id: str, filename: str, engine: RetrievalEngine = Depends(_engine)):
+    """Download the source code of a specific script attached to an entry."""
+    entry = engine.resolve_identifier(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    script = next((s for s in entry.scripts if s.filename == filename), None)
+    if not script:
+        raise HTTPException(status_code=404, detail=f"No script '{filename}' on entry '{entry_id}'")
+
+    safe_filename = filename.replace("/", "_").replace("\\", "_").replace('"', "")
+    media_type = _media_type_for_language(script.language)
+    return Response(
+        content=script.content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
+
+
 @router.get("/{entry_id}/download")
 def download_script(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
-    """Download the raw source code of an entry that has script metadata.
+    """Download the first attached script of an entry (backward-compatible endpoint).
 
-    Returns the script content as a plain-text file with a ``Content-Disposition``
-    header that suggests the stored filename so the caller can save it directly.
-
-    Any entry with ``metadata.script_language`` set is considered downloadable.
-    Returns 400 if the entry has no script language metadata.
+    Prefer ``GET /{entry_id}/scripts/{filename}`` when the entry has multiple scripts.
+    Returns 400 if the entry has no scripts attached.
     """
     entry = engine.resolve_identifier(entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    if not entry.metadata.script_language:
+    if not entry.scripts:
         raise HTTPException(
             status_code=400,
-            detail=f"Entry '{entry_id}' has no script_language in metadata — not a downloadable script.",
+            detail=f"Entry '{entry_id}' has no attached scripts.",
         )
 
-    filename = entry.metadata.script_filename or (entry.slug + ".txt")
-    # Sanitise filename — strip path separators to prevent header injection
-    filename = filename.replace("/", "_").replace("\\", "_").replace('"', "")
-
-    media_type = _media_type_for_language(entry.metadata.script_language or "")
+    script = entry.scripts[0]
+    filename = script.filename.replace("/", "_").replace("\\", "_").replace('"', "")
+    media_type = _media_type_for_language(script.language)
     return Response(
-        content=entry.content,
+        content=script.content,
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

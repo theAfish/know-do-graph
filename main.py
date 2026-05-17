@@ -422,10 +422,12 @@ def agent_chat(
         return
 
     # Interactive REPL
+    from prompt_toolkit import PromptSession as _PS
+    _session = _PS()
     console.print("[bold]Know-Do Graph Agent[/bold]  (type [dim]exit[/dim] or [dim]quit[/dim] to stop, [dim]reset[/dim] to clear history)")
     while True:
         try:
-            user_input = typer.prompt("You")
+            user_input = _session.prompt("You: ")
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Goodbye.[/dim]")
             break
@@ -556,10 +558,12 @@ def review_chat(
         _run(message)
         return
 
+    from prompt_toolkit import PromptSession as _PS
+    _session = _PS()
     console.print("[bold]Know-Do Graph ReviewAgent[/bold]  (type [dim]exit[/dim] to stop)")
     while True:
         try:
-            user_input = typer.prompt("You")
+            user_input = _session.prompt("You: ")
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Goodbye.[/dim]")
             break
@@ -642,13 +646,15 @@ def orchestrate_chat(
         _run(message)
         return
 
+    from prompt_toolkit import PromptSession as _PS
+    _session = _PS()
     console.print(
         "[bold]Know-Do Graph Orchestrator[/bold]  "
         "(type [dim]exit[/dim] to stop, [dim]reset[/dim] to clear history)"
     )
     while True:
         try:
-            user_input = typer.prompt("You")
+            user_input = _session.prompt("You: ")
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Goodbye.[/dim]")
             break

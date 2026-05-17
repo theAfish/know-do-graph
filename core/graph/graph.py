@@ -67,6 +67,9 @@ class KnowDoGraph:
 
         direction: "out" (successors), "in" (predecessors), "both"
         """
+        if entry_id not in self._g:
+            return []
+
         neighbors: list[dict] = []
 
         def _matches(data: dict) -> bool:
@@ -113,8 +116,13 @@ class KnowDoGraph:
         visited.discard(entry_id)
         return list(visited)
 
+    def has_node(self, entry_id: str) -> bool:
+        return self._g.has_node(entry_id)
+
     def get_subgraph(self, entry_id: str, depth: int = 2) -> nx.DiGraph:
         """Return an ego-subgraph centred on entry_id up to *depth* hops."""
+        if entry_id not in self._g:
+            return nx.DiGraph()
         nodes = {entry_id}
         frontier = {entry_id}
         for _ in range(depth):

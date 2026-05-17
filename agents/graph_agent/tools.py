@@ -551,49 +551,72 @@ def create_script_entry(
     source_provenance: str | None = None,
     graph: Any = None,
 ) -> dict:
-    """Create a script entry in the graph — stores executable code that external agents/users can download.
+    """DEPRECATED — creates a standalone script node.
 
-    The code is stored in the entry's ``content`` field; language, requirements,
-    and suggested filename are saved in the entry metadata so they survive
-    serialisation.
+    Scripts should be attached directly to their parent node via
+    ``add_script_to_entry``.  This function is kept for backward compatibility
+    but will be removed in a future version.
     """
-    from core.schemas.entry import Entry, EntryMetadata, EntryType
+    return {
+        "error": (
+            "create_script_entry is deprecated. Use add_script_to_entry to attach "
+            "scripts directly to the procedure or capability node they belong to. "
+            "This keeps script code out of the content field that agents read by default."
+        )
+    }
+
+
+def add_script_to_entry(
+    entry_id: str,
+    code: str,
+    filename: str | None = None,
+    language: str = "python",
+    requirements: list[str] | None = None,
+    description: str = "",
+    graph: Any = None,
+) -> dict:
+    """Attach an executable script directly to an existing entry.
+
+    The script is stored in the entry's ``scripts`` list (``scripts_json`` column),
+    separate from the human-readable ``content`` field.  Agents reading the entry
+    will see the description/workflow in ``content`` but will not accidentally
+    consume large script bodies.  A node can hold any number of scripts.
+
+    Returns the updated entry id, title, and a summary of all attached scripts.
+    """
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.entry import ScriptAttachment
     from core.storage.database import SessionLocal
     from core.storage.repository import EntryRepository
 
-    meta = EntryMetadata(
-        source_provenance=source_provenance,
-        script_language=language,
-        script_requirements=requirements or [],
-        script_filename=filename or _slug(title) + _ext_for_language(language),
-    )
-    # Prepend a header comment to the code for clarity
-    header = f"# {title}\n# Language: {language}\n"
-    if requirements:
-        header += f"# Requirements: {', '.join(requirements)}\n"
-    if description:
-        header += f"# {description}\n"
-    full_content = header + "\n" + code
-
-    entry = Entry(
-        title=title,
-        content=full_content,
-        entry_type=EntryType.capability,
-        tags=tags or [],
-        aliases=aliases or [],
-        metadata=meta,
-    )
+    g = graph or app_state.graph
     with SessionLocal() as db:
-        saved = EntryRepository(db).create(entry)
-    if graph is not None:
-        graph.add_entry(saved)
+        engine = RetrievalEngine(db, g)
+        entry = engine.resolve_identifier(entry_id)
+        if entry is None:
+            return {"error": f"Entry '{entry_id}' not found."}
+
+        resolved_filename = filename or (_slug(entry.title) + _ext_for_language(language))
+        # Replace existing script with the same filename if present
+        entry.scripts = [s for s in entry.scripts if s.filename != resolved_filename]
+        entry.scripts.append(ScriptAttachment(
+            filename=resolved_filename,
+            language=language,
+            content=code,
+            requirements=requirements or [],
+            description=description,
+        ))
+        updated = EntryRepository(db).update(entry)
+
+    if g is not None and updated:
+        g.add_entry(updated)
+
     return {
-        "id": saved.id,
-        "slug": saved.slug,
-        "title": saved.title,
-        "language": language,
-        "filename": meta.script_filename,
-        "download_url": f"/entries/{saved.id}/download",
+        "id": updated.id,
+        "title": updated.title,
+        "scripts": [{"filename": s.filename, "language": s.language, "requirements": s.requirements}
+                    for s in updated.scripts],
     }
 
 
@@ -622,10 +645,10 @@ def _ext_for_language(language: str) -> str:
     return mapping.get(language.lower(), ".txt")
 
 
-def get_script(identifier: str, graph: Any = None) -> dict:
-    """Retrieve a script entry's code, language, and requirements by ID or slug.
+def get_script(identifier: str, filename: str | None = None, graph: Any = None) -> dict:
+    """List the scripts attached to an entry (no code returned — use the download URL to fetch source).
 
-    Returns everything needed for a user to download and run the script locally.
+    Pass ``filename`` to retrieve metadata for a specific script; omit to get all.
     """
     from core import app_state
     from core.retrieval.retrieval import RetrievalEngine
@@ -637,22 +660,34 @@ def get_script(identifier: str, graph: Any = None) -> dict:
         entry = engine.resolve_identifier(identifier)
     if entry is None:
         return {"error": f"Entry '{identifier}' not found."}
-    if not entry.metadata.script_language:
-        return {"error": f"Entry '{identifier}' has no script_language in metadata — not a downloadable script."}
+    if not entry.scripts:
+        return {"error": f"Entry '{identifier}' has no attached scripts."}
+
+    scripts = entry.scripts
+    if filename:
+        scripts = [s for s in scripts if s.filename == filename]
+        if not scripts:
+            return {"error": f"No script named '{filename}' on entry '{identifier}'."}
+
     return {
         "id": entry.id,
         "slug": entry.slug,
         "title": entry.title,
-        "language": entry.metadata.script_language or "unknown",
-        "requirements": entry.metadata.script_requirements,
-        "filename": entry.metadata.script_filename or entry.slug + ".txt",
-        "code": entry.content,
-        "download_url": f"/entries/{entry.id}/download",
+        "scripts": [
+            {
+                "filename": s.filename,
+                "language": s.language,
+                "requirements": s.requirements,
+                "description": s.description,
+                "download_url": f"/entries/{entry.id}/scripts/{s.filename}",
+            }
+            for s in scripts
+        ],
     }
 
 
 def list_scripts(limit: int = 50, graph: Any = None) -> list[dict]:
-    """List all capability entries that have runnable scripts attached (have script_language set in metadata)."""
+    """List all entries that have scripts directly attached, with filename and download URLs."""
     from core import app_state
     from core.retrieval.retrieval import RetrievalEngine
     from core.storage.database import SessionLocal
@@ -660,19 +695,23 @@ def list_scripts(limit: int = 50, graph: Any = None) -> list[dict]:
     g = graph or app_state.graph
     with SessionLocal() as db:
         engine = RetrievalEngine(db, g)
-        # Fetch a broad set and filter by presence of script_language in metadata
         candidates = engine.list_entries(limit=max(limit * 5, 500))
-    results = [e for e in candidates if e.metadata.script_language]
+    results = [e for e in candidates if e.scripts]
     return [
         {
             "id": e.id,
             "slug": e.slug,
             "title": e.title,
-            "language": e.metadata.script_language or "unknown",
-            "filename": e.metadata.script_filename,
-            "requirements": e.metadata.script_requirements,
             "tags": e.tags,
-            "download_url": f"/entries/{e.id}/download",
+            "scripts": [
+                {
+                    "filename": s.filename,
+                    "language": s.language,
+                    "requirements": s.requirements,
+                    "download_url": f"/entries/{e.id}/scripts/{s.filename}",
+                }
+                for s in e.scripts
+            ],
         }
         for e in results[:limit]
     ]
@@ -883,34 +922,16 @@ def attach_script_to_entry(
     relation: str = "implements",
     graph: Any = None,
 ) -> dict:
-    """Create a typed edge linking a script to any graph entry.
+    """DEPRECATED — linked standalone script nodes via edges.
 
-    Typical usage: link a script that *implements* a procedure, *documents*
-    an analytical method, or *uses* a tool/dependency.
-
-    relation must be one of: implements, uses, documents, execution_pathway.
+    Use ``add_script_to_entry`` instead to attach scripts directly to a node.
     """
-    from core import app_state
-    from core.schemas.edge import Edge, EdgeRelation
-    from core.storage.database import SessionLocal
-    from core.storage.repository import EdgeRepository
-
-    allowed = {"implements", "uses", "documents", "execution_pathway", "generated_from", "derived_from"}
-    if relation not in allowed:
-        return {"error": f"relation must be one of {sorted(allowed)}"}
-
-    try:
-        rel = EdgeRelation(relation)
-    except ValueError:
-        rel = EdgeRelation.implements
-
-    edge = Edge(source_id=script_id, target_id=entry_id, relation=rel, weight=1.0)
-    g = graph or app_state.graph
-    with SessionLocal() as db:
-        saved = EdgeRepository(db).create(edge)
-    if g is not None:
-        g.add_edge(saved)
-    return {"edge_id": saved.id, "script_id": script_id, "entry_id": entry_id, "relation": rel.value}
+    return {
+        "error": (
+            "attach_script_to_entry is deprecated. Use add_script_to_entry to attach "
+            "scripts directly to the target entry instead of creating a separate script node."
+        )
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1215,17 +1236,20 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "create_script_entry",
+            "name": "add_script_to_entry",
             "description": (
-                "Create a script entry in the graph, storing executable code that "
-                "external agents or users can later download and run locally. "
+                "Attach an executable script directly to an existing entry. "
+                "The script is stored separately from the human-readable content field, "
+                "so agents reading the entry will not accidentally consume large script bodies. "
+                "A single entry can hold multiple scripts (e.g. two helper modules for one skill). "
                 "Use for Python, bash, Julia, or any other runnable script."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Human-readable script title"},
-                    "code": {"type": "string", "description": "The full source code of the script"},
+                    "entry_id": {"type": "string", "description": "ID or slug of the target entry"},
+                    "code": {"type": "string", "description": "Full source code of the script"},
+                    "filename": {"type": "string", "description": "Suggested filename (e.g. relax.py). Defaults to slug + extension."},
                     "language": {
                         "type": "string",
                         "description": "Programming language (e.g. python, bash, julia, r)",
@@ -1237,12 +1261,8 @@ TOOL_SCHEMAS: list[dict] = [
                         "description": "Package dependencies (e.g. ['ase', 'numpy'])",
                     },
                     "description": {"type": "string", "description": "Short description of what the script does"},
-                    "tags": {"type": "array", "items": {"type": "string"}},
-                    "aliases": {"type": "array", "items": {"type": "string"}},
-                    "filename": {"type": "string", "description": "Suggested filename for download (e.g. relax.py)"},
-                    "source_provenance": {"type": "string", "description": "URL or citation this script was derived from"},
                 },
-                "required": ["title", "code"],
+                "required": ["entry_id", "code"],
             },
         },
     },
@@ -1251,13 +1271,15 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "get_script",
             "description": (
-                "Retrieve the full source code, language, requirements, and download URL "
-                "of a script entry by its ID or slug."
+                "List the scripts attached to an entry (metadata only — no code). "
+                "Returns filenames, language, requirements, and download URLs. "
+                "Use the download URL to fetch the actual source code."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "identifier": {"type": "string", "description": "Script entry ID or slug"},
+                    "identifier": {"type": "string", "description": "Entry ID or slug"},
+                    "filename": {"type": "string", "description": "Filter to a specific script filename (optional)"},
                 },
                 "required": ["identifier"],
             },
@@ -1267,37 +1289,12 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "list_scripts",
-            "description": "List all script entries in the graph with their language, filename, and download URL.",
+            "description": "List all entries that have scripts directly attached, with filenames and download URLs.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "limit": {"type": "integer", "default": 50},
                 },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "attach_script_to_entry",
-            "description": (
-                "Link a script entry to another entry via a semantic edge. "
-                "Use 'implements' when a script implements a procedure, "
-                "'documents' when a script demonstrates a capability, "
-                "'uses' when a script depends on a tool/library entry."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "script_id": {"type": "string", "description": "ID or slug of the script entry"},
-                    "entry_id": {"type": "string", "description": "ID or slug of the target entry"},
-                    "relation": {
-                        "type": "string",
-                        "enum": ["implements", "uses", "documents", "execution_pathway", "generated_from", "derived_from"],
-                        "default": "implements",
-                    },
-                },
-                "required": ["script_id", "entry_id"],
             },
         },
     },
@@ -1434,6 +1431,7 @@ TOOL_DISPATCH: dict[str, Any] = {
     "list_nodes_by_type": list_nodes_by_type,
     "merge_entries": merge_entries,
     "create_script_entry": create_script_entry,
+    "add_script_to_entry": add_script_to_entry,
     "get_script": get_script,
     "list_scripts": list_scripts,
     "build_material_interface_workflow": build_material_interface_workflow,

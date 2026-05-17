@@ -394,25 +394,28 @@ async function openDetail(nodeId) {
   ].filter(Boolean);
   if (mdRows.length) html += section('Metadata', mdRows);
 
-  // Script section — shown for any entry with script_language in metadata
-  if (md.script_language) {
-    const lang = md.script_language || 'unknown';
-    const reqs = (md.script_requirements && md.script_requirements.length)
-      ? md.script_requirements.join(', ') : '—';
-    const fname = md.script_filename || entry.slug + '.txt';
-    const dlUrl = `${API}/entries/${entry.id}/download`;
+  // Scripts section — shown for any entry with directly-attached scripts
+  if (entry.scripts && entry.scripts.length) {
+    const scriptRows = entry.scripts.map(s => {
+      const reqs = s.requirements && s.requirements.length ? s.requirements.join(', ') : '—';
+      const dlUrl = `${API}/entries/${entry.id}/scripts/${encodeURIComponent(s.filename)}`;
+      return `<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #eee">
+        ${kv('Filename', s.filename)}
+        ${kv('Language', s.language || 'unknown')}
+        ${kv('Requirements', reqs)}
+        ${s.description ? kv('Description', s.description) : ''}
+        <div style="margin-top:6px">
+          <a href="${escAttr(dlUrl)}" download="${escAttr(s.filename)}"
+             style="display:inline-block;background:#e36209;color:#fff;border-radius:6px;
+                    padding:5px 14px;font-size:12px;text-decoration:none;font-weight:600;">
+            ⬇ Download ${escHtml(s.filename)}
+          </a>
+        </div>
+      </div>`;
+    });
     html += `<div class="detail-section">
-      <div class="detail-section-title">Script</div>
-      ${kv('Language', lang)}
-      ${kv('Requirements', reqs)}
-      ${kv('Filename', fname)}
-      <div style="margin-top:8px">
-        <a href="${escAttr(dlUrl)}" download="${escAttr(fname)}"
-           style="display:inline-block;background:#e36209;color:#fff;border-radius:6px;
-                  padding:5px 14px;font-size:12px;text-decoration:none;font-weight:600;">
-          ⬇ Download ${escHtml(fname)}
-        </a>
-      </div>
+      <div class="detail-section-title">Scripts (${entry.scripts.length})</div>
+      ${scriptRows.join('')}
     </div>`;
   }
 
@@ -587,6 +590,7 @@ function render(nodes, edges) {
     .enter().append('g')
       .attr('class', 'node')
       .call(d3.drag()
+        .clickDistance(5)
         .on('start', dragStart)
         .on('drag',  dragging)
         .on('end',   dragEnd));
@@ -627,11 +631,19 @@ function render(nodes, edges) {
     });
 }
 
+let _dragStartX, _dragStartY, _dragActive;
 function dragStart(event, d) {
-  if (!event.active) simulation.alphaTarget(0.3).restart();
-  d.fx = d.x; d.fy = d.y;
+  _dragStartX = event.x; _dragStartY = event.y; _dragActive = false;
 }
-function dragging(event, d) { d.fx = event.x; d.fy = event.y; }
+function dragging(event, d) {
+  if (!_dragActive) {
+    if (Math.hypot(event.x - _dragStartX, event.y - _dragStartY) < 5) return;
+    _dragActive = true;
+    simulation.alphaTarget(0.3).restart();
+    d.fx = d.x; d.fy = d.y;
+  }
+  d.fx = event.x; d.fy = event.y;
+}
 function dragEnd(event, d) {
   if (!event.active) simulation.alphaTarget(0);
   d.fx = null; d.fy = null;

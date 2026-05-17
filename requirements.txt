@@ -10,3 +10,4 @@ openai>=1.0
 httpx>=0.25
 duckduckgo-search>=6.0
 python-dotenv>=1.0
+prompt_toolkit>=3.0

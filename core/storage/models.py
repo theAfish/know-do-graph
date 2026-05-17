@@ -21,6 +21,7 @@ class EntryModel(Base):
     aliases = Column(Text, default="[]")        # JSON list
     metadata_json = Column(Text, default="{}")  # JSON object
     internal_refs = Column(Text, default="[]")  # JSON list
+    scripts_json = Column(Text, default="[]")   # JSON list of ScriptAttachment dicts
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
 
@@ -35,6 +36,7 @@ class EntryModel(Base):
             "aliases": json.loads(self.aliases or "[]"),
             "metadata": json.loads(self.metadata_json or "{}"),
             "internal_refs": json.loads(self.internal_refs or "[]"),
+            "scripts": json.loads(self.scripts_json or "[]"),
         }
 
 
