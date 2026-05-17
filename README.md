@@ -16,7 +16,7 @@ python -m venv .venv
 source .venv/bin/activate     # macOS / Linux
 
 # 2. Install dependencies
-pip install -r requirements.txt
+pip install -e .
 
 # 3. Seed example entries (optional)
 python examples/example_entries.py

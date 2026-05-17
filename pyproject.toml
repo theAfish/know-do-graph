@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "know-do-graph"
+version = "0.1.0"
+description = "A wiki-native, agent-oriented infrastructure for executable knowledge, operational memory, and capability discovery."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "networkx>=3.0",
+    "fastapi>=0.100",
+    "uvicorn[standard]",
+    "typer[all]",
+    "sqlalchemy>=2.0",
+    "rich>=13.0",
+    "pyyaml>=6.0",
+    "openai>=1.0",
+    "httpx>=0.25",
+    "duckduckgo-search>=6.0",
+    "python-dotenv>=1.0",
+    "prompt_toolkit>=3.0",
+]
+
+[project.scripts]
+know-do-graph = "main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agents", "api", "core", "examples"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
