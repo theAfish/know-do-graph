@@ -69,15 +69,23 @@ async def graph_events(request: Request):
 
     async def generator():
         q = _events.subscribe()
+        ticks_since_ping = 0
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    msg = await asyncio.wait_for(q.get(), timeout=25)
+                    msg = await asyncio.wait_for(q.get(), timeout=1.0)
                     yield f"data: {msg}\n\n"
+                    ticks_since_ping = 0
                 except asyncio.TimeoutError:
-                    yield 'data: {"type":"ping"}\n\n'
+                    ticks_since_ping += 1
+                    if ticks_since_ping >= 25:
+                        yield 'data: {"type":"ping"}\n\n'
+                        ticks_since_ping = 0
+        except asyncio.CancelledError:
+            # Client disconnected or server shutting down — exit promptly
+            raise
         finally:
             _events.unsubscribe(q)
 

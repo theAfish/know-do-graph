@@ -22,6 +22,7 @@ class EntryModel(Base):
     metadata_json = Column(Text, default="{}")  # JSON object
     internal_refs = Column(Text, default="[]")  # JSON list
     scripts_json = Column(Text, default="[]")   # JSON list of ScriptAttachment dicts
+    embedding_hash = Column(String, nullable=True)  # sha1 of last-embedded text; null = needs embedding
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
 

@@ -696,6 +696,72 @@ def orchestrate_run(
 
 
 # ===========================================================================
+# embeddings sub-commands
+# ===========================================================================
+
+embeddings_app = typer.Typer(help="Manage vector embeddings for hybrid retrieval", no_args_is_help=True)
+app.add_typer(embeddings_app, name="embeddings")
+
+
+@embeddings_app.command("backfill")
+def embeddings_backfill(
+    batch: int = typer.Option(32, "--batch", "-b", help="Embedding batch size"),
+    force: bool = typer.Option(False, "--force", help="Re-embed even if hash matches"),
+) -> None:
+    """Compute and store embeddings for every entry that lacks one (or all, with --force)."""
+    _init()
+    from core.retrieval import vector_store
+    from core.retrieval.embedder import build_embedding_text, get_default_embedder, text_hash
+    from core.storage.database import SessionLocal
+    from core.storage.models import EntryModel
+
+    embedder = get_default_embedder()
+    if not embedder.available:
+        console.print(
+            "[red]No embedder available.[/red] Install with: "
+            "[cyan]pip install 'know-do-graph[embeddings]'[/cyan]"
+        )
+        raise typer.Exit(1)
+
+    with SessionLocal() as db:
+        rows = db.query(EntryModel).all()
+        pending: list[tuple[EntryModel, str, str]] = []
+        for row in rows:
+            d = row.to_dict()
+            text_in = build_embedding_text(
+                title=d["title"], aliases=d["aliases"], tags=d["tags"], content=d["content"]
+            )
+            new_hash = text_hash(text_in)
+            if not force and row.embedding_hash == new_hash:
+                continue
+            pending.append((row, text_in, new_hash))
+
+        total = len(pending)
+        console.print(f"[bold]{total}[/bold] entries to embed (of {len(rows)} total).")
+        if total == 0:
+            return
+
+        done = 0
+        for i in range(0, total, batch):
+            chunk = pending[i:i + batch]
+            vecs = embedder.embed([t for _, t, _ in chunk])
+            for (row, _t, h), vec in zip(chunk, vecs):
+                if not vec:
+                    continue
+                if vector_store.upsert(db, row.id, vec):
+                    row.embedding_hash = h
+                    done += 1
+            db.commit()
+            console.print(f"  [dim]…{min(i + len(chunk), total)}/{total}[/dim]")
+
+        index_count = vector_store.count(db)
+        console.print(
+            f"[green]Embedded {done} entries.[/green] "
+            f"Vector index now holds {index_count if index_count is not None else '?'} rows."
+        )
+
+
+# ===========================================================================
 # serve
 # ===========================================================================
 
@@ -713,7 +779,17 @@ def serve(
     console.print(f"  [cyan]Graph UI  [/cyan] → [link={base}/ui]{base}/ui[/link]")
     console.print(f"  [cyan]Swagger   [/cyan] → [link={base}/docs]{base}/docs[/link]\n")
 
-    uvicorn.run("api.main:app", host=host, port=port, reload=reload)
+    # `timeout_graceful_shutdown` ensures Ctrl+C doesn't hang on long-lived
+    # SSE connections (Windows in particular). Combined with the per-second
+    # disconnect-check in /graph/events, shutdown completes in <2 s.
+    config = uvicorn.Config(
+        "api.main:app",
+        host=host,
+        port=port,
+        reload=reload,
+        timeout_graceful_shutdown=2,
+    )
+    uvicorn.Server(config).run()
 
 
 if __name__ == "__main__":

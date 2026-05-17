@@ -70,11 +70,26 @@ def root_instructions(request: Request) -> PlainTextResponse:
 
 
 # ── Frontend ──────────────────────────────────────────────────────────────────
-_FRONTEND = Path(__file__).parent.parent / "frontend"
+# After `npm run build` in frontend/, Vite emits frontend/dist/ with relative
+# asset URLs (vite.config.js: base: './'). We serve dist/index.html at /ui and
+# the hashed bundle at /assets. In dev, prefer `npm run dev` (Vite on :5173
+# with API proxy) — direct HMR, this mount unused.
+_FRONTEND_ROOT = Path(__file__).parent.parent / "frontend"
+_FRONTEND_DIST = _FRONTEND_ROOT / "dist"
+_FRONTEND_LEGACY = _FRONTEND_ROOT / "index.html"  # pre-Vite single-file UI
 
-if _FRONTEND.is_dir():
-    app.mount("/static", StaticFiles(directory=str(_FRONTEND)), name="static")
+if _FRONTEND_DIST.is_dir() and (_FRONTEND_DIST / "index.html").is_file():
+    if (_FRONTEND_DIST / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="ui-assets")
 
     @app.get("/ui", include_in_schema=False)
     def serve_ui() -> FileResponse:
-        return FileResponse(str(_FRONTEND / "index.html"))
+        return FileResponse(str(_FRONTEND_DIST / "index.html"))
+
+elif _FRONTEND_LEGACY.is_file():
+    # Fallback to legacy single-file UI when dist/ doesn't exist yet.
+    app.mount("/static", StaticFiles(directory=str(_FRONTEND_ROOT)), name="static")
+
+    @app.get("/ui", include_in_schema=False)
+    def serve_ui() -> FileResponse:
+        return FileResponse(str(_FRONTEND_LEGACY))

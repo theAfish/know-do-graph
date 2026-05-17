@@ -1,0 +1,116 @@
+/* ── Design tokens ────────────────────────────────────────────────────────── */
+:root {
+  /* Surfaces */
+  --bg-0: #0a0d12;
+  --bg-1: #0d1117;
+  --bg-2: #161b22;
+  --bg-3: #1c2128;
+  --bg-elev: #21262d;
+
+  /* Borders */
+  --border: #30363d;
+  --border-soft: #21262d;
+
+  /* Text */
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --text-dim: #6e7681;
+
+  /* Accent */
+  --accent: #58a6ff;
+  --accent-soft: #79c0ff;
+  --accent-bg: rgba(31, 111, 235, 0.15);
+
+  /* State */
+  --success: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+
+  /* Graph */
+  --edge-color: #444c56;
+
+  /* Entry-type swatches (mirror constants.js) */
+  --c-capability: #238636;
+  --c-procedure: #1f6feb;
+  --c-workflow: #d29922;
+  --c-tool: #8957e5;
+  --c-repository: #bf8700;
+  --c-environment: #1a7f5a;
+  --c-dependency: #cf222e;
+  --c-data: #388bfd;
+  --c-analytical: #a371f7;
+  --c-memory: #6e7781;
+  --c-generic: #444c56;
+
+  /* Layout */
+  --toolbar-h: 56px;
+  --panel-w: 380px;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-pill: 999px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  background: var(--bg-0);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+code,
+kbd,
+pre {
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--bg-2);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input,
+select {
+  font: inherit;
+  color: inherit;
+}

@@ -38,13 +38,20 @@ def search_entries(
     tags: Optional[str] = None,
     entry_type: Optional[EntryType] = None,
     limit: int = 20,
+    include_scores: bool = False,
     engine: RetrievalEngine = Depends(_engine),
 ):
-    """Full-text search with optional tag and type filters.
+    """Full-text + vector hybrid search.
 
-    `tags` is a comma-separated string, e.g. `tags=atomistic,python`.
+    Pass ``include_scores=true`` to receive a ``_score`` field (0.0–1.0) on
+    each result — useful for rendering relevance coloring in the frontend.
     """
     tag_list = [t.strip() for t in tags.split(",")] if tags else None
+    if include_scores and q:
+        results = engine.search_entries_scored(
+            query=q, tags=tag_list, entry_type=entry_type, limit=limit
+        )
+        return [{**e.model_dump(mode="json"), "_score": round(score, 4)} for e, score in results]
     results = engine.search_entries(query=q, tags=tag_list, entry_type=entry_type, limit=limit)
     return [e.model_dump(mode="json") for e in results]
 

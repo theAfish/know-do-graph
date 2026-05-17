@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Optional
@@ -9,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from core.schemas.edge import Edge
 from core.schemas.entry import Entry
+
+logger = logging.getLogger(__name__)
 
 
 def _unique_slug(db: Session, base_slug: str, entry_id: str) -> str:
@@ -29,6 +32,41 @@ def _unique_slug(db: Session, base_slug: str, entry_id: str) -> str:
         if not _taken(candidate):
             return candidate
     return f"{base_slug}-{entry_id[:8]}"
+
+
+def _refresh_embedding(db: Session, entry: Entry, model) -> None:
+    """Compute / refresh the embedding row for *entry* and stamp its hash.
+
+    Failures are logged and swallowed — embedding must never break writes.
+    """
+    from core.retrieval import vector_store
+    from core.retrieval.embedder import build_embedding_text, get_default_embedder, text_hash
+
+    try:
+        embedder = get_default_embedder()
+        if not embedder.available:
+            return
+        text = build_embedding_text(
+            title=entry.title,
+            aliases=entry.aliases,
+            tags=entry.tags,
+            content=entry.content,
+        )
+        new_hash = text_hash(text)
+        if model.embedding_hash == new_hash:
+            return
+        vec = embedder.embed([text])[0]
+        if not vec:
+            return
+        if vector_store.upsert(db, entry.id, vec):
+            model.embedding_hash = new_hash
+            db.commit()
+    except Exception as exc:
+        logger.warning("embedding refresh failed for %s: %s", entry.id, exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 class EntryRepository:
@@ -56,7 +94,9 @@ class EntryRepository:
         self._db.add(model)
         self._db.commit()
         self._db.refresh(model)
-        return Entry(**model.to_dict())
+        saved = Entry(**model.to_dict())
+        _refresh_embedding(self._db, saved, model)
+        return saved
 
     def update(self, entry: Entry) -> Optional[Entry]:
         from core.storage.models import EntryModel
@@ -76,9 +116,12 @@ class EntryRepository:
         model.updated_at = datetime.utcnow()
         self._db.commit()
         self._db.refresh(model)
-        return Entry(**model.to_dict())
+        saved = Entry(**model.to_dict())
+        _refresh_embedding(self._db, saved, model)
+        return saved
 
     def delete(self, entry_id: str) -> bool:
+        from core.retrieval import vector_store
         from core.storage.models import EntryModel
 
         model = self._db.get(EntryModel, entry_id)
@@ -86,6 +129,7 @@ class EntryRepository:
             return False
         self._db.delete(model)
         self._db.commit()
+        vector_store.delete(self._db, entry_id)
         return True
 
     def get_all(self) -> list[Entry]:
