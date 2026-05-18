@@ -8,6 +8,8 @@ Usage (SSE endpoint):
     q = events.subscribe()
     try:
         msg = await asyncio.wait_for(q.get(), timeout=25)
+        if msg is events.SHUTDOWN_SENTINEL:
+            return  # server shutting down
     finally:
         events.unsubscribe(q)
 """
@@ -18,8 +20,20 @@ import asyncio
 import json
 from typing import Any
 
+# Sentinel put into every subscriber queue on server shutdown
+SHUTDOWN_SENTINEL: object = object()
+
 # Active subscriber queues (one per SSE connection)
 _subscribers: set[asyncio.Queue] = set()
+
+
+def signal_shutdown() -> None:
+    """Push the shutdown sentinel into every subscriber queue so generators exit cleanly."""
+    for q in list(_subscribers):
+        try:
+            q.put_nowait(SHUTDOWN_SENTINEL)
+        except asyncio.QueueFull:
+            pass
 
 
 def subscribe() -> asyncio.Queue:

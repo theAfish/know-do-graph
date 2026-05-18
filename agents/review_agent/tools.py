@@ -243,11 +243,11 @@ def merge_entries(
     return result
 
 
-def search_entries(query: str, limit: int = 10, graph: Any = None) -> list[dict]:
-    """Full-text search — use this to find candidates for merging or cross-linking."""
+def search_entries(query: str, limit: int = 10, mode: str = "hybrid", graph: Any = None) -> list[dict]:
+    """Hybrid semantic + keyword search — use to find duplicate or related candidates."""
     from agents.graph_agent.tools import search_entries as _search_entries
 
-    return _search_entries(query=query, limit=limit, graph=graph)
+    return _search_entries(query=query, limit=limit, mode=mode, graph=graph)
 
 
 def create_edge(
@@ -372,12 +372,29 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_entries",
-            "description": "Search for nodes by keyword — useful to find duplicate candidates.",
+            "description": (
+                "Search for nodes using hybrid semantic + keyword retrieval. "
+                "The default 'hybrid' mode combines embedding-based vector similarity with "
+                "keyword scoring (RRF fusion). Use 'semantic' to find conceptually related nodes "
+                "even when wording differs — ideal for surfacing near-duplicate candidates. "
+                "Use 'keyword' for exact title or acronym lookups. "
+                "If a search misses, retry with a different mode or a broader/rephrased query."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
                     "limit": {"type": "integer", "default": 10},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "semantic", "keyword"],
+                        "default": "hybrid",
+                        "description": (
+                            "hybrid: keyword + embedding ANN fused (default). "
+                            "semantic: embedding-only, best for conceptual/paraphrase matching. "
+                            "keyword: exact text match, best for known titles or acronyms."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },

@@ -1,0 +1,22 @@
+{
+  "bc83e79a-65ce-4802-a753-156e25780a9d": {
+    "id": "bc83e79a-65ce-4802-a753-156e25780a9d",
+    "session_id": "matcreator-hsa-docking-20250518",
+    "content": "Complete HSA-ibuprofen docking session. Successfully executed the full protein-ligand docking pipeline: PDB retrieval -> RDKit ligand prep (SMILES C13H18O2 -> PDBQT) -> Meeko receptor prep (2BXG, stripped ibuprofen) -> AutoDock Vina docking (25A box, exhaustiveness=64) -> analysis. Best affinity: -7.253 kcal/mol (STRONG). Key lessons: (1) PDB coordinate frame mismatch between 1AO6 and 2BXG required switching to same-PDB approach, (2) Meeko needs --allow_bad_res for real PDBs, (3) Vina 1.2.5 removed --log flag. Binding pocket correctly identified as Sudlow Site II with residues Tyr411, Ser489, Arg410, Lys414. Created 3 new graph entries: workflow (d929703d), meeko-prep procedure (c10db319), coordinate-frame-check procedure (21932d25). Verified entries: autodock-vina (works), protein-ligand-docking (works), rdkit (works).",
+    "tags": [
+      "session-summary",
+      "docking",
+      "hsa",
+      "ibuprofen",
+      "vina",
+      "workflow-created"
+    ],
+    "source_entry_ids": [],
+    "created_at": "2026-05-18T01:12:56.781613Z",
+    "success": null,
+    "promoted": false,
+    "promotion_target_id": null,
+    "source_format": "manual",
+    "raw_source": null
+  }
+}

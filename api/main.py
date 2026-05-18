@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from fastapi import Request
@@ -30,7 +30,8 @@ async def lifespan(app: FastAPI):
         edges_list = EdgeRepository(db).get_all()
     graph.rebuild_from_db(entries_list, edges_list)
     yield
-    # Nothing to clean up on shutdown
+    from core import events as _events
+    _events.signal_shutdown()
 
 
 app = FastAPI(
@@ -76,7 +77,6 @@ def root_instructions(request: Request) -> PlainTextResponse:
 # with API proxy) — direct HMR, this mount unused.
 _FRONTEND_ROOT = Path(__file__).parent.parent / "frontend"
 _FRONTEND_DIST = _FRONTEND_ROOT / "dist"
-_FRONTEND_LEGACY = _FRONTEND_ROOT / "index.html"  # pre-Vite single-file UI
 
 if _FRONTEND_DIST.is_dir() and (_FRONTEND_DIST / "index.html").is_file():
     if (_FRONTEND_DIST / "assets").is_dir():
@@ -86,10 +86,15 @@ if _FRONTEND_DIST.is_dir() and (_FRONTEND_DIST / "index.html").is_file():
     def serve_ui() -> FileResponse:
         return FileResponse(str(_FRONTEND_DIST / "index.html"))
 
-elif _FRONTEND_LEGACY.is_file():
-    # Fallback to legacy single-file UI when dist/ doesn't exist yet.
-    app.mount("/static", StaticFiles(directory=str(_FRONTEND_ROOT)), name="static")
+else:
+    from fastapi.responses import HTMLResponse
 
     @app.get("/ui", include_in_schema=False)
-    def serve_ui() -> FileResponse:
-        return FileResponse(str(_FRONTEND_LEGACY))
+    def serve_ui_not_built() -> HTMLResponse:
+        return HTMLResponse(
+            "<h1 style='font-family:sans-serif'>Frontend not built</h1>"
+            "<p style='font-family:sans-serif'>Run the following then restart the server:</p>"
+            "<pre style='background:#111;color:#0f0;padding:1em;border-radius:4px'>"
+            "cd frontend\nnpm install\nnpm run build</pre>",
+            status_code=503,
+        )

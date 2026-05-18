@@ -73,8 +73,9 @@ class RetrievalEngine:
         tags: Optional[list[str]] = None,
         entry_type: Optional[EntryType] = None,
         limit: int = 20,
+        mode: str = "hybrid",
     ) -> list[Entry]:
-        return [e for _, e in self._search_impl(query, tags, entry_type, limit)]
+        return [e for _, e in self._search_impl(query, tags, entry_type, limit, mode)]
 
     def search_entries_scored(
         self,
@@ -82,9 +83,10 @@ class RetrievalEngine:
         tags: Optional[list[str]] = None,
         entry_type: Optional[EntryType] = None,
         limit: int = 20,
+        mode: str = "hybrid",
     ) -> list[tuple[Entry, float]]:
         """Like search_entries but returns (entry, score) with scores normalized 0.0–1.0."""
-        raw = self._search_impl(query, tags, entry_type, limit)
+        raw = self._search_impl(query, tags, entry_type, limit, mode)
         if not raw:
             return []
         max_score = max(s for s, _ in raw) or 1.0
@@ -96,29 +98,35 @@ class RetrievalEngine:
         tags: Optional[list[str]],
         entry_type: Optional[EntryType],
         limit: int,
+        mode: str = "hybrid",
     ) -> list[tuple[Entry, float]]:
-        """Hybrid retrieval: keyword scoring + vector ANN, fused with RRF, then
-        soft-reranked by verification trust + usage.
+        """Retrieval with three modes:
+          - "hybrid": keyword + vector ANN fused with RRF (default)
+          - "semantic": vector-only ANN (best for conceptually similar queries)
+          - "keyword": keyword-only (best for exact title/tag/acronym lookups)
 
         Falls back gracefully:
           - No query → filter-only listing, scores all 0.
-          - No embedder / no vec index → pure keyword path.
+          - No embedder / no vec index → pure keyword path regardless of mode.
         """
         if not query:
             return [(0.0, e) for e in self._filter_only(tags=tags, entry_type=entry_type, limit=limit)]
 
-        # Channel A — keyword scorer over the filtered candidate set.
-        keyword_hits = self._keyword_search(
-            query=query, tags=tags, entry_type=entry_type, limit=200
-        )
-        keyword_ranked: list[str] = [eid for eid, _ in keyword_hits]
-        entries_by_id: dict[str, Entry] = {eid: e for eid, _, e in
-                                           self._with_entries(keyword_hits)}
+        entries_by_id: dict[str, Entry] = {}
 
-        # Channel B — vector ANN over the whole index, filtered after KNN.
+        # Channel A — keyword scorer (skipped in semantic mode).
+        keyword_ranked: list[str] = []
+        if mode != "semantic":
+            keyword_hits = self._keyword_search(
+                query=query, tags=tags, entry_type=entry_type, limit=200
+            )
+            keyword_ranked = [eid for eid, _ in keyword_hits]
+            entries_by_id.update({eid: e for eid, _, e in self._with_entries(keyword_hits)})
+
+        # Channel B — vector ANN (skipped in keyword mode).
         vector_ranked: list[str] = []
         embedder = get_default_embedder()
-        if embedder.available:
+        if mode != "keyword" and embedder.available:
             qvec = embedder.embed([query])[0]
             for eid, _dist in vector_store.knn(self._db, qvec, k=50):
                 if eid in entries_by_id:

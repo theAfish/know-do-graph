@@ -114,7 +114,8 @@ export function render(nodes, edges, initialAlpha = 0.8) {
         .distance(95)
     )
     .force('charge', d3.forceManyBody().strength(-240))
-    .force('center', d3.forceCenter(svgEl.clientWidth / 2, svgEl.clientHeight / 2))
+    .force('x', d3.forceX(svgEl.clientWidth / 2).strength(0.05))
+    .force('y', d3.forceY(svgEl.clientHeight / 2).strength(0.05))
     .force(
       'collide',
       d3.forceCollide((d) => rScale(degreeMap[d.id] || 0) + 8)

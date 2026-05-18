@@ -2,12 +2,31 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from core.app_state import graph as _graph
 
 router = APIRouter()
+
+
+class _SSEResponse(StreamingResponse):
+    """StreamingResponse that swallows CancelledError on server shutdown.
+
+    Starlette's listen_for_disconnect task raises CancelledError (a BaseException,
+    not Exception) when uvicorn force-cancels connections after the graceful-shutdown
+    timeout. That bypasses Starlette's internal `wrap()` handler and reaches uvicorn's
+    error logger, producing a spurious "Exception in ASGI application" traceback.
+    Catching it here keeps the log clean; all generator finally-blocks still run
+    because the stack unwinds normally before we get here.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except asyncio.CancelledError:
+            pass
 
 
 @router.get("/stats")
@@ -59,7 +78,7 @@ def get_neighbors(
 
 
 @router.get("/events")
-async def graph_events(request: Request):
+async def graph_events():
     """Server-Sent Events stream — pushes graph change notifications in real time.
 
     Events have the shape: ``{"type": "node_added"|"node_updated"|"node_removed", "data": {...}}``
@@ -72,10 +91,10 @@ async def graph_events(request: Request):
         ticks_since_ping = 0
         try:
             while True:
-                if await request.is_disconnected():
-                    break
                 try:
                     msg = await asyncio.wait_for(q.get(), timeout=1.0)
+                    if msg is _events.SHUTDOWN_SENTINEL:
+                        return
                     yield f"data: {msg}\n\n"
                     ticks_since_ping = 0
                 except asyncio.TimeoutError:
@@ -84,12 +103,11 @@ async def graph_events(request: Request):
                         yield 'data: {"type":"ping"}\n\n'
                         ticks_since_ping = 0
         except asyncio.CancelledError:
-            # Client disconnected or server shutting down — exit promptly
             raise
         finally:
             _events.unsubscribe(q)
 
-    return StreamingResponse(
+    return _SSEResponse(
         generator(),
         media_type="text/event-stream",
         headers={

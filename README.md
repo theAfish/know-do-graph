@@ -15,8 +15,8 @@ python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # macOS / Linux
 
-# 2. Install dependencies
-pip install -e .
+# 2. Install everything (Python deps + Vite frontend build)
+bash install.sh
 
 # 3. Seed example entries (optional)
 python examples/example_entries.py
@@ -24,7 +24,25 @@ python examples/example_entries.py
 # 4. Start the API server
 python main.py serve
 # → http://127.0.0.1:8000
-# → http://127.0.0.1:8000/docs  (interactive Swagger UI)
+# → http://127.0.0.1:8000/ui   (graph browser)
+# → http://127.0.0.1:8000/docs (interactive Swagger UI)
+```
+
+> **Manual frontend build** (if you prefer not to use `install.sh`):
+> ```bash
+> cd frontend && npm install && npm run build && cd ..
+> ```
+> Re-run whenever you edit files under `frontend/src/` or `frontend/styles/`.
+
+### Frontend development (hot-reload)
+
+```bash
+# Terminal 1 — API backend
+python main.py serve
+
+# Terminal 2 — Vite dev server with API proxy
+cd frontend && npm run dev
+# → http://localhost:5173  (proxies /entries, /graph, etc. to :8000)
 ```
 
 ---

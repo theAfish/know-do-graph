@@ -161,8 +161,8 @@ def delete_entry(entry_id: str, graph: Any = None) -> dict:
     return {"deleted": deleted, "entry_id": entry_id}
 
 
-def search_entries(query: str, limit: int = 10, graph: Any = None) -> list[dict]:
-    """Full-text search over entry titles and content."""
+def search_entries(query: str, limit: int = 10, mode: str = "hybrid", graph: Any = None) -> list[dict]:
+    """Hybrid semantic + keyword search over entries."""
     from core import app_state
     from core.retrieval.retrieval import RetrievalEngine
     from core.storage.database import SessionLocal
@@ -170,7 +170,7 @@ def search_entries(query: str, limit: int = 10, graph: Any = None) -> list[dict]
     g = graph or app_state.graph
     with SessionLocal() as db:
         engine = RetrievalEngine(db, g)
-        results = engine.search_entries(query=query, limit=limit)
+        results = engine.search_entries(query=query, limit=limit, mode=mode)
     return [
         {"id": e.id, "slug": e.slug, "title": e.title, "type": e.entry_type.value, "tags": e.tags}
         for e in results
@@ -357,7 +357,7 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def find_similar_nodes(title: str, limit: int = 8, graph: Any = None) -> list[dict]:
+def find_similar_nodes(title: str, limit: int = 8, mode: str = "hybrid", graph: Any = None) -> list[dict]:
     """Search for nodes whose title or aliases closely resemble *title*.
 
     Use this before creating a new node to avoid duplicates and decide whether
@@ -371,7 +371,7 @@ def find_similar_nodes(title: str, limit: int = 8, graph: Any = None) -> list[di
     g = graph or app_state.graph
     with SessionLocal() as db:
         engine = RetrievalEngine(db, g)
-        results = engine.search_entries(query=title, limit=limit)
+        results = engine.search_entries(query=title, limit=limit, mode=mode)
     return [
         {
             "id": e.id,
@@ -1018,12 +1018,32 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_entries",
-            "description": "Full-text search for entries matching a query string.",
+            "description": (
+                "Search for entries using hybrid semantic + keyword retrieval. "
+                "The default 'hybrid' mode fuses embedding-based vector similarity (ANN) "
+                "with keyword scoring via Reciprocal Rank Fusion, then re-ranks by "
+                "verification trust and usage count. "
+                "Use 'semantic' when you want conceptually/thematically similar results "
+                "even if the exact words differ (e.g. paraphrases, synonyms, related domains). "
+                "Use 'keyword' for exact title, acronym, or tag lookups. "
+                "Strategy tip: if the first search misses, retry with a different mode or "
+                "a rephrased / more general query."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
                     "limit": {"type": "integer", "default": 10},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "semantic", "keyword"],
+                        "default": "hybrid",
+                        "description": (
+                            "hybrid: keyword + embedding ANN fused (default). "
+                            "semantic: embedding-only, best for conceptual similarity. "
+                            "keyword: exact text match, best for known titles or acronyms."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -1159,15 +1179,30 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "find_similar_nodes",
             "description": (
-                "Search for existing nodes whose title or aliases resemble a given title. "
-                "ALWAYS call this before creating a new node to avoid duplicates. "
-                "Returns candidates with id, slug, title, type, tags, and aliases."
+                "Find existing nodes that are semantically or lexically similar to a proposed title. "
+                "Uses hybrid embedding + keyword search by default. "
+                "ALWAYS call this before creating a new node to avoid duplicates — "
+                "try both the specific title AND a generalised version. "
+                "If the default mode returns poor results, retry with mode='semantic' to catch "
+                "conceptually equivalent nodes that use different wording, or mode='keyword' "
+                "to find exact-title/acronym matches. "
+                "Returns id, slug, title, type, tags, and aliases for each candidate."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "The proposed node title or concept to check"},
                     "limit": {"type": "integer", "default": 8},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "semantic", "keyword"],
+                        "default": "hybrid",
+                        "description": (
+                            "hybrid: keyword + embedding ANN fused (default). "
+                            "semantic: embedding-only, best for conceptual/paraphrase matching. "
+                            "keyword: exact text match, best for known titles or acronyms."
+                        ),
+                    },
                 },
                 "required": ["title"],
             },

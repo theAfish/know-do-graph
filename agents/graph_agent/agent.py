@@ -91,6 +91,18 @@ Scripts are **capability** entries with `script_language` set in metadata.
 2. Link scripts to procedures/capabilities via ``attach_script_to_entry``.
 3. Any entry with `script_language` set can be downloaded at ``GET /entries/{id}/download``.
 
+## Search strategy
+Both ``search_entries`` and ``find_similar_nodes`` support three modes:
+- **hybrid** (default) — fuses embedding vector similarity (ANN) with keyword scoring via
+  Reciprocal Rank Fusion, then re-ranks by verification trust and usage count. Best general-purpose choice.
+- **semantic** — embedding-only. Use when the exact words differ but the concept is the same
+  (paraphrases, synonyms, related domains). Good for catching near-duplicates with different wording.
+- **keyword** — exact text matching on title, aliases, tags, content. Use for known acronyms,
+  formula strings, or when you need precise title lookup.
+
+If an initial search returns poor results, try a different mode or rephrase/broaden the query
+before assuming no match exists. For duplicate detection, run at least one semantic pass.
+
 ## Workflow for adding new knowledge
 1. Call ``get_graph_overview`` to orient yourself.
 2. For every concept you intend to create, search for both the specific and

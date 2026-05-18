@@ -26,10 +26,10 @@ export function attachNodeInteractions(simulationGetter) {
         if (!dragActive) {
           if (Math.hypot(event.x - dragStartX, event.y - dragStartY) < 5) return;
           dragActive = true;
-          const sim = simulationGetter();
-          sim?.alphaTarget(0.3).restart();
           d.fx = d.x;
           d.fy = d.y;
+          const sim = simulationGetter();
+          sim?.alphaTarget(0.05).restart();
         }
         d.fx = event.x;
         d.fy = event.y;
