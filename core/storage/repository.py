@@ -88,6 +88,7 @@ class EntryRepository:
             metadata_json=json.dumps(entry.metadata.model_dump(mode="json")),
             internal_refs=json.dumps(entry.internal_refs),
             scripts_json=json.dumps([s.model_dump() for s in entry.scripts]),
+            assets_json=json.dumps([a.model_dump() for a in entry.assets]),
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
@@ -113,6 +114,7 @@ class EntryRepository:
         model.metadata_json = json.dumps(entry.metadata.model_dump(mode="json"))
         model.internal_refs = json.dumps(entry.internal_refs)
         model.scripts_json = json.dumps([s.model_dump() for s in entry.scripts])
+        model.assets_json = json.dumps([a.model_dump() for a in entry.assets])
         model.updated_at = datetime.utcnow()
         self._db.commit()
         self._db.refresh(model)

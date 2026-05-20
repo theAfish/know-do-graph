@@ -18,10 +18,31 @@ from typing import Any, Callable, Iterator
 
 from openai import OpenAI
 
+from core import events as _events
 from core.graph.graph import KnowDoGraph
 from agents.graph_agent.tools import TOOL_DISPATCH, TOOL_SCHEMAS
 
 _DEFAULT_MODEL = "qwen-plus"
+
+# Tool calls that mutate the graph; the frontend is notified via SSE so it
+# can refresh after each such call.
+_MUTATING_TOOLS: set[str] = {
+    "create_entry",
+    "update_entry",
+    "delete_entry",
+    "create_edge",
+    "delete_edge",
+    "merge_entries",
+    "resolve_wikilinks",
+    "remove_dangling_edges",
+    "create_script_entry",
+    "add_script_to_entry",
+    "attach_script_to_entry",
+    "add_asset_to_entry",
+    "build_material_interface_workflow",
+    "create_material_entry",
+    "submit_feedback",
+}
 
 _SYSTEM_PROMPT = """You are an expert knowledge-graph management assistant for the Know-Do Graph system.
 
@@ -90,6 +111,23 @@ Scripts are **capability** entries with `script_language` set in metadata.
 1. Use ``create_script_entry`` to add runnable scripts.
 2. Link scripts to procedures/capabilities via ``attach_script_to_entry``.
 3. Any entry with `script_language` set can be downloaded at ``GET /entries/{id}/download``.
+
+## Node assets (folder-style)
+Every node behaves like a small folder containing typed assets, addressable as
+`[entry]/[folder]/[filename]` and served at
+``GET /entries/{id}/assets/{folder}/{filename}``.
+
+Conventional folders (free-form names also allowed):
+- ``scripts``     — runnable code (Python/bash/…)
+- ``references``  — URLs to papers, repos, docs (use ``kind="link"``)
+- ``docs``        — markdown/text documentation (``kind="text"``)
+- ``examples``    — example input files, configs, notebooks
+- ``data``        — small datasets / structural files
+- ``notes``       — free-form annotations
+
+Use ``add_asset_to_entry`` for anything beyond a script (URL, doc, example file).
+Use ``add_script_to_entry`` for runnable scripts (auto-targets the ``scripts`` folder).
+Use ``list_assets`` to inspect a node's folder tree.
 
 ## Search strategy
 Both ``search_entries`` and ``find_similar_nodes`` support three modes:
@@ -226,6 +264,16 @@ class GraphAgent:
         # Inject the live graph instance into every call
         kwargs["graph"] = self._graph
         try:
-            return func(**kwargs)
+            result = func(**kwargs)
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
+
+        # Broadcast a refresh hint so connected frontends re-fetch the graph.
+        if name in _MUTATING_TOOLS:
+            is_error = isinstance(result, dict) and "error" in result
+            if not is_error:
+                try:
+                    _events.emit("graph_changed", {"tool": name})
+                except Exception:
+                    pass
+        return result

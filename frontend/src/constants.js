@@ -15,3 +15,23 @@ export const TYPE_COLORS = {
 export const ENTRY_TYPES = Object.keys(TYPE_COLORS);
 
 export const colorFor = (type) => TYPE_COLORS[type] || TYPE_COLORS.generic;
+
+export const VERIFICATION_COLORS = {
+  unverified: '#6e7781',
+  self_tested: '#1f6feb',
+  peer_reviewed: '#238636',
+  community_tested: '#a371f7',
+  bugged: '#cf222e',
+  deprecated: '#444c56',
+};
+
+// Color modes shown in the toolbar selector.
+// `label` is the human-readable name; `kind` is "categorical" or "ramp".
+export const COLOR_MODES = [
+  { value: 'type', label: 'Entry type', kind: 'categorical' },
+  { value: 'verification', label: 'Verification', kind: 'categorical' },
+  { value: 'relevance', label: 'Relevance', kind: 'ramp' },
+  { value: 'timestamp', label: 'Created', kind: 'ramp' },
+  { value: 'usage_count', label: 'Usage count', kind: 'ramp' },
+  { value: 'trust_score', label: 'Trust score', kind: 'ramp' },
+];

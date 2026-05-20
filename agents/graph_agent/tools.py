@@ -586,7 +586,7 @@ def add_script_to_entry(
     """
     from core import app_state
     from core.retrieval.retrieval import RetrievalEngine
-    from core.schemas.entry import ScriptAttachment
+    from core.schemas.entry import NodeAsset, ASSET_FOLDER_SCRIPTS
     from core.storage.database import SessionLocal
     from core.storage.repository import EntryRepository
 
@@ -598,12 +598,17 @@ def add_script_to_entry(
             return {"error": f"Entry '{entry_id}' not found."}
 
         resolved_filename = filename or (_slug(entry.title) + _ext_for_language(language))
-        # Replace existing script with the same filename if present
-        entry.scripts = [s for s in entry.scripts if s.filename != resolved_filename]
-        entry.scripts.append(ScriptAttachment(
+        # Replace existing asset at scripts/<filename> if present
+        entry.assets = [
+            a for a in entry.assets
+            if not (a.folder == ASSET_FOLDER_SCRIPTS and a.filename == resolved_filename)
+        ]
+        entry.assets.append(NodeAsset(
+            folder=ASSET_FOLDER_SCRIPTS,
             filename=resolved_filename,
-            language=language,
+            kind="file",
             content=code,
+            language=language,
             requirements=requirements or [],
             description=description,
         ))
@@ -643,6 +648,134 @@ def _ext_for_language(language: str) -> str:
         "c++": ".cpp",
     }
     return mapping.get(language.lower(), ".txt")
+
+
+def add_asset_to_entry(
+    entry_id: str,
+    folder: str,
+    filename: str,
+    content: str = "",
+    kind: str = "file",
+    language: str | None = None,
+    mime_type: str | None = None,
+    description: str = "",
+    requirements: list[str] | None = None,
+    graph: Any = None,
+) -> dict:
+    """Attach a generic *asset* to an entry inside a named folder.
+
+    Each entry behaves like a small folder containing typed assets. Conventional
+    folders are ``scripts``, ``references``, ``docs``, ``examples``, ``data``,
+    ``notes``; any other folder name is allowed.
+
+    Parameters
+    ----------
+    folder:
+        Sub-folder name (e.g. ``"scripts"``, ``"references"``, ``"docs"``).
+    filename:
+        File name within the folder (may contain a sub-path like
+        ``"examples/relax.py"``).
+    content:
+        File body for ``kind="file"`` / ``"text"``, or the URL for
+        ``kind="link"``.
+    kind:
+        One of ``"file"`` (binary/code download), ``"text"`` (inline markdown
+        / notes), or ``"link"`` (external reference; ``content`` is a URL).
+    language:
+        Programming language hint for syntax / mime detection (``"python"`` …).
+    description:
+        Short human-readable description shown in the UI.
+    requirements:
+        Package dependencies (for runnable scripts).
+
+    The asset becomes addressable as
+    ``GET /entries/{entry_id}/assets/{folder}/{filename}``.
+    """
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.entry import NodeAsset
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EntryRepository
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        entry = engine.resolve_identifier(entry_id)
+        if entry is None:
+            return {"error": f"Entry '{entry_id}' not found."}
+        try:
+            asset = NodeAsset(
+                folder=folder,
+                filename=filename,
+                kind=kind,
+                content=content,
+                language=language,
+                mime_type=mime_type,
+                description=description,
+                requirements=requirements or [],
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+        # Replace existing asset at same folder/filename
+        entry.assets = [
+            a for a in entry.assets
+            if not (a.folder == asset.folder and a.filename == asset.filename)
+        ]
+        entry.assets.append(asset)
+        updated = EntryRepository(db).update(entry)
+
+    if g is not None and updated:
+        g.add_entry(updated)
+
+    return {
+        "id": updated.id,
+        "title": updated.title,
+        "asset": {
+            "folder": asset.folder,
+            "filename": asset.filename,
+            "kind": asset.kind,
+            "download_url": f"/entries/{updated.id}/assets/{asset.folder}/{asset.filename}",
+        },
+        "total_assets": len(updated.assets),
+    }
+
+
+def list_assets(identifier: str, folder: str | None = None, graph: Any = None) -> dict:
+    """List the assets attached to an entry, grouped by folder.
+
+    Pass ``folder`` to filter to a single sub-folder (e.g. ``"references"``).
+    Returns metadata only — fetch bodies via the asset download URL.
+    """
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        entry = engine.resolve_identifier(identifier)
+    if entry is None:
+        return {"error": f"Entry '{identifier}' not found."}
+
+    grouped: dict[str, list[dict]] = {}
+    for a in entry.assets:
+        if folder and a.folder != folder.lower():
+            continue
+        grouped.setdefault(a.folder, []).append({
+            "filename": a.filename,
+            "kind": a.kind,
+            "language": a.language,
+            "description": a.description,
+            "size": len(a.content or ""),
+            "download_url": f"/entries/{entry.id}/assets/{a.folder}/{a.filename}",
+        })
+    return {
+        "id": entry.id,
+        "slug": entry.slug,
+        "title": entry.title,
+        "folders": grouped,
+        "total": sum(len(v) for v in grouped.values()),
+    }
 
 
 def get_script(identifier: str, filename: str | None = None, graph: Any = None) -> dict:
@@ -1334,6 +1467,76 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     # ------------------------------------------------------------------ #
+    # Generic asset (folder-style) tools                                   #
+    # ------------------------------------------------------------------ #
+    {
+        "type": "function",
+        "function": {
+            "name": "add_asset_to_entry",
+            "description": (
+                "Attach a generic asset (script, reference, doc, example, data file, "
+                "external link, free-form note) to an entry in a named folder. "
+                "Each node is treated as a small folder of typed assets addressable "
+                "as `[entry]/[folder]/[filename]`. "
+                "Conventional folders: scripts, references, docs, examples, data, notes "
+                "(custom folder names are also accepted). "
+                "Use kind='link' for URLs (content = the URL), 'text' for inline "
+                "markdown/notes, 'file' for downloadable bodies."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entry_id": {"type": "string", "description": "ID or slug of the target entry"},
+                    "folder": {
+                        "type": "string",
+                        "description": "Sub-folder name (e.g. scripts, references, docs, examples, data, notes)",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename inside the folder (may include a sub-path like 'inputs/lj.in')",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Body for file/text assets; the URL itself for link assets",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["file", "link", "text"],
+                        "default": "file",
+                    },
+                    "language": {"type": "string", "description": "Optional language hint (python, bash, markdown, …)"},
+                    "mime_type": {"type": "string", "description": "Optional MIME override"},
+                    "description": {"type": "string"},
+                    "requirements": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Package dependencies (for runnable scripts)",
+                    },
+                },
+                "required": ["entry_id", "folder", "filename"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_assets",
+            "description": (
+                "List the assets attached to an entry, grouped by folder. "
+                "Optionally filter to a single folder. Returns metadata + download URLs; "
+                "fetch bodies via the download URL."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "identifier": {"type": "string", "description": "Entry ID or slug"},
+                    "folder": {"type": "string", "description": "Optional folder name filter"},
+                },
+                "required": ["identifier"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------ #
     # Material interface tools                                             #
     # ------------------------------------------------------------------ #
     {
@@ -1469,6 +1672,8 @@ TOOL_DISPATCH: dict[str, Any] = {
     "add_script_to_entry": add_script_to_entry,
     "get_script": get_script,
     "list_scripts": list_scripts,
+    "add_asset_to_entry": add_asset_to_entry,
+    "list_assets": list_assets,
     "build_material_interface_workflow": build_material_interface_workflow,
     "create_material_entry": create_material_entry,
     "attach_script_to_entry": attach_script_to_entry,

@@ -4,9 +4,35 @@ import re
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+
+class RemoteSource(BaseModel):
+    """Link to an upstream file (e.g. a SKILL.md in another repo) that should be
+    mirrored periodically into this node's ``content``.
+
+    The identity of the node (id, slug, title, wikilinks-pointing-at-it) is
+    intentionally NOT touched by the sync — only the body is refreshed.
+    """
+    kind: Literal["github", "http"] = "github"
+    # Display URL (e.g. https://github.com/owner/repo or https://github.com/owner/repo/blob/ref/path)
+    url: str
+    # For kind="github": owner/repo and path-in-repo.
+    owner: Optional[str] = None
+    repo: Optional[str] = None
+    ref: str = "main"          # branch / tag / commit
+    path: Optional[str] = None  # e.g. "skills/extractor/SKILL.md"
+    # Cache / change-detection
+    content_hash: Optional[str] = None   # sha256 of last-fetched body
+    etag: Optional[str] = None           # GitHub blob sha or HTTP ETag
+    fetched_at: Optional[datetime] = None
+    status: Literal["ok", "stale", "error", "never"] = "never"
+    last_error: Optional[str] = None
+    # Auto-sync controls
+    auto_sync: bool = True
+    sync_interval_seconds: int = 3600
 
 
 class EntryType(str, Enum):
@@ -79,6 +105,8 @@ class EntryMetadata(BaseModel):
     review_count: int = 0
     modify_count: int = 0
     last_reviewed_at: Optional[datetime] = None
+    # Remote-source mirror (for nodes that wrap an upstream SKILL.md / script).
+    remote_source: Optional[RemoteSource] = None
     custom: dict = Field(default_factory=dict)
 
 
@@ -90,12 +118,96 @@ def _extract_wikilinks(content: str) -> list[str]:
 
 
 class ScriptAttachment(BaseModel):
-    """An executable script stored directly on a node, separate from human-readable content."""
+    """An executable script stored directly on a node, separate from human-readable content.
+
+    Kept for backward compatibility — internally these are mirrored into the
+    generalised :class:`NodeAsset` list with ``folder="scripts"``.
+    """
     filename: str
     language: str = "python"
     content: str
     requirements: list[str] = Field(default_factory=list)
     description: str = ""
+
+
+# ── Asset folders (free-form, but these are recognised by the UI) ────────────
+ASSET_FOLDER_SCRIPTS = "scripts"
+ASSET_FOLDER_REFERENCES = "references"
+ASSET_FOLDER_DOCS = "docs"
+ASSET_FOLDER_EXAMPLES = "examples"
+ASSET_FOLDER_DATA = "data"
+ASSET_FOLDER_NOTES = "notes"
+
+KNOWN_ASSET_FOLDERS = (
+    ASSET_FOLDER_SCRIPTS,
+    ASSET_FOLDER_REFERENCES,
+    ASSET_FOLDER_DOCS,
+    ASSET_FOLDER_EXAMPLES,
+    ASSET_FOLDER_DATA,
+    ASSET_FOLDER_NOTES,
+)
+
+
+def _normalise_folder(folder: str) -> str:
+    f = (folder or "").strip().strip("/").lower()
+    f = re.sub(r"[^a-z0-9_\-]+", "-", f)
+    return f or ASSET_FOLDER_NOTES
+
+
+def _normalise_filename(filename: str) -> str:
+    """Strip path traversal and leading slashes; keep simple sub-paths."""
+    name = (filename or "").strip().lstrip("/\\")
+    # Reject path-traversal segments outright
+    parts = [p for p in re.split(r"[\\/]+", name) if p and p != "."]
+    if any(p == ".." for p in parts):
+        raise ValueError(f"Invalid asset filename (contains '..'): {filename!r}")
+    if not parts:
+        raise ValueError("Asset filename must not be empty")
+    return "/".join(parts)
+
+
+class NodeAsset(BaseModel):
+    """A file-like attachment on an entry.
+
+    Each node behaves like a small folder of typed assets. Folders are free-form
+    strings (e.g. ``scripts``, ``references``, ``docs``, ``examples``, ``data``,
+    ``notes``); see :data:`KNOWN_ASSET_FOLDERS` for the conventional set.
+
+    External agents can address assets as ``[entry-slug]/[folder]/[filename]``
+    via ``GET /entries/{id}/assets/{folder}/{filename}``.
+    """
+    folder: str = ASSET_FOLDER_NOTES
+    filename: str
+    kind: str = "file"  # "file" | "link" | "text"
+    content: str = ""    # body for file/text; URL for link
+    language: Optional[str] = None
+    mime_type: Optional[str] = None
+    description: str = ""
+    requirements: list[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+
+    @field_validator("folder", mode="before")
+    @classmethod
+    def _v_folder(cls, v):
+        return _normalise_folder(v if isinstance(v, str) else "")
+
+    @field_validator("filename", mode="before")
+    @classmethod
+    def _v_filename(cls, v):
+        return _normalise_filename(v if isinstance(v, str) else "")
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _v_kind(cls, v):
+        v = (v or "file").lower()
+        if v not in ("file", "link", "text"):
+            v = "file"
+        return v
+
+    @property
+    def path(self) -> str:
+        """Folder/filename path used in asset URLs."""
+        return f"{self.folder}/{self.filename}"
 
 
 class Entry(BaseModel):
@@ -109,6 +221,7 @@ class Entry(BaseModel):
     metadata: EntryMetadata = Field(default_factory=EntryMetadata)
     internal_refs: list[str] = Field(default_factory=list)
     scripts: list[ScriptAttachment] = Field(default_factory=list)
+    assets: list[NodeAsset] = Field(default_factory=list)
 
     def model_post_init(self, __context: object) -> None:
         if not self.slug:
@@ -116,9 +229,65 @@ class Entry(BaseModel):
         extracted = _extract_wikilinks(self.content)
         combined = list(dict.fromkeys(self.internal_refs + extracted))
         self.internal_refs = combined
+        # Bidirectional sync between legacy `scripts` and generalised `assets`.
+        self._sync_scripts_and_assets()
 
     def refresh_refs(self) -> None:
         self.internal_refs = list(dict.fromkeys(_extract_wikilinks(self.content)))
+
+    # ------------------------------------------------------------------
+    # Assets / scripts sync helpers
+    # ------------------------------------------------------------------
+
+    def _sync_scripts_and_assets(self) -> None:
+        """Keep ``scripts`` and ``assets[folder='scripts']`` in sync.
+
+        ``assets`` is the canonical store. ``scripts`` is a derived legacy view.
+
+        - **Legacy load** (``assets`` empty, ``scripts`` non-empty): migrate the
+          scripts into ``assets`` so future reads see the unified model.
+        - Otherwise: any ``scripts=`` passed at construction is **ignored**
+          (``assets`` is authoritative).
+        - ``scripts`` is then rebuilt strictly from ``assets`` so deletions on
+          ``assets`` propagate to the legacy view.
+        """
+        if not self.assets and self.scripts:
+            for s in self.scripts:
+                self.assets.append(NodeAsset(
+                    folder=ASSET_FOLDER_SCRIPTS,
+                    filename=s.filename,
+                    kind="file",
+                    content=s.content,
+                    language=s.language,
+                    requirements=list(s.requirements),
+                    description=s.description,
+                ))
+        # Derived view — always rebuilt from canonical assets.
+        self.scripts = [
+            ScriptAttachment(
+                filename=a.filename,
+                language=a.language or "python",
+                content=a.content,
+                requirements=list(a.requirements),
+                description=a.description,
+            )
+            for a in self.assets
+            if a.folder == ASSET_FOLDER_SCRIPTS and a.kind != "link"
+        ]
+
+    def find_asset(self, folder: str, filename: str) -> Optional[NodeAsset]:
+        folder = _normalise_folder(folder)
+        filename = _normalise_filename(filename)
+        for a in self.assets:
+            if a.folder == folder and a.filename == filename:
+                return a
+        return None
+
+    def assets_by_folder(self) -> dict[str, list[NodeAsset]]:
+        out: dict[str, list[NodeAsset]] = {}
+        for a in self.assets:
+            out.setdefault(a.folder, []).append(a)
+        return out
 
 
 def _slug_from_title(title: str) -> str:

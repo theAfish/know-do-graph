@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,23 +18,45 @@ from fastapi.responses import PlainTextResponse
 
 from api.routes import entries, graph as graph_routes, mem as mem_routes, agent as agent_routes
 from api.routes import remote as remote_routes
+from api.routes import remote_sync as remote_sync_routes
 from core.app_state import graph
 from core.storage.database import SessionLocal, init_db
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise the database and rebuild the in-memory graph on startup."""
     init_db()
+    from core import events as _events
+    _events.set_loop(asyncio.get_running_loop())
     with SessionLocal() as db:
         from core.storage.repository import EdgeRepository, EntryRepository
 
         entries_list = EntryRepository(db).get_all()
         edges_list = EdgeRepository(db).get_all()
     graph.rebuild_from_db(entries_list, edges_list)
-    yield
-    from core import events as _events
-    _events.signal_shutdown()
+
+    sync_task: asyncio.Task | None = None
+    if os.environ.get("KDG_REMOTE_SYNC_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+        interval = int(os.environ.get("KDG_REMOTE_SYNC_INTERVAL_SECONDS", "900"))
+        from core.sync.remote_sync import run_periodic_sync
+
+        sync_task = asyncio.create_task(run_periodic_sync(interval))
+        logger.info("remote-sync background loop started (interval=%ss)", interval)
+
+    try:
+        yield
+    finally:
+        from core import events as _events
+        _events.signal_shutdown()
+        if sync_task is not None:
+            sync_task.cancel()
+            try:
+                await sync_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 app = FastAPI(
@@ -56,6 +81,7 @@ app.include_router(graph_routes.router, prefix="/graph", tags=["graph"])
 app.include_router(mem_routes.router, prefix="/mem", tags=["mem"])
 app.include_router(agent_routes.router, prefix="/agent", tags=["agent"])
 app.include_router(remote_routes.router, prefix="/remote", tags=["remote"])
+app.include_router(remote_sync_routes.router, prefix="/remote-sync", tags=["remote-sync"])
 
 
 @app.get("/health", tags=["meta"])

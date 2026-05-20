@@ -1,11 +1,13 @@
-import { ENTRY_TYPES } from '../constants.js';
+import { ENTRY_TYPES, COLOR_MODES } from '../constants.js';
 import { state, on, emit, EVENTS } from '../state.js';
-import { resetView, getSelections } from '../graph/render.js';
+import { resetView } from '../graph/render.js';
 
 export function initToolbar() {
   populateTypeFilter();
+  populateColorMode();
   bindButtons();
   bindSSEStatus();
+  applyLabelVisibility();
 }
 
 function populateTypeFilter() {
@@ -19,43 +21,54 @@ function populateTypeFilter() {
   }
 }
 
+function populateColorMode() {
+  const sel = document.getElementById('color-mode');
+  if (!sel) return;
+  sel.innerHTML = '';
+  for (const m of COLOR_MODES) {
+    const opt = document.createElement('option');
+    opt.value = m.value;
+    opt.textContent = m.label;
+    if (m.value === state.colorMode) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
 function bindButtons() {
   const labelsBtn = document.getElementById('toggle-labels');
-  const scoreBtn = document.getElementById('toggle-score');
+  const colorSel = document.getElementById('color-mode');
   const resetBtn = document.getElementById('reset-view');
 
   syncLabelBtn(labelsBtn);
-  syncScoreBtn(scoreBtn);
 
   labelsBtn?.addEventListener('click', () => {
     state.showLabels = !state.showLabels;
     syncLabelBtn(labelsBtn);
-    const { sceneSel } = getSelections();
-    sceneSel
-      ?.selectAll('.node text:not(.score-label)')
-      .style('display', state.showLabels ? null : 'none');
+    applyLabelVisibility();
     emit(EVENTS.LABELS_CHANGED, state.showLabels);
   });
 
-  scoreBtn?.addEventListener('click', () => {
-    state.scoreMode = !state.scoreMode;
-    syncScoreBtn(scoreBtn);
-    emit(EVENTS.SCORE_MODE_CHANGED, state.scoreMode);
+  colorSel?.addEventListener('change', (e) => {
+    state.colorMode = e.target.value || 'type';
+    emit(EVENTS.COLOR_MODE_CHANGED, state.colorMode);
+    // Kept for backward compat with any external listeners.
+    emit(EVENTS.SCORE_MODE_CHANGED, state.colorMode);
   });
 
   resetBtn?.addEventListener('click', () => resetView());
+}
+
+function applyLabelVisibility() {
+  // Toggle a single class on <body>; CSS hides both .node text and .edge-label
+  // when labels are off. This keeps the toggle in one place and lets per-node
+  // filtering (style display:none) keep working orthogonally.
+  document.body.classList.toggle('labels-off', !state.showLabels);
 }
 
 function syncLabelBtn(btn) {
   if (!btn) return;
   btn.textContent = `Labels: ${state.showLabels ? 'on' : 'off'}`;
   btn.classList.toggle('active', state.showLabels);
-}
-
-function syncScoreBtn(btn) {
-  if (!btn) return;
-  btn.textContent = `Relevance: ${state.scoreMode ? 'on' : 'off'}`;
-  btn.classList.toggle('active', state.scoreMode);
 }
 
 function bindSSEStatus() {

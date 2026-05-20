@@ -45,6 +45,12 @@
   font-family: 'JetBrains Mono', monospace;
 }
 
+/* Labels toggle: hides both node titles and edge relation labels. */
+body.labels-off .node text:not(.score-label),
+body.labels-off .edge-label {
+  display: none !important;
+}
+
 .node .score-label {
   font-size: 9px;
   fill: rgba(255, 255, 255, 0.95);

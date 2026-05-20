@@ -92,8 +92,7 @@ export function render(nodes, edges, initialAlpha = 0.8) {
   nodeSel
     .append('text')
     .attr('x', (d) => rScale(degreeMap[d.id] || 0) + 4)
-    .text((d) => d.title)
-    .style('display', state.showLabels ? null : 'none');
+    .text((d) => d.title);
 
   nodeSel
     .append('text')

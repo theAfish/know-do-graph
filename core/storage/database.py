@@ -51,6 +51,7 @@ def init_db() -> None:
         for col, default in [
             ("aliases", "'[]'"),
             ("scripts_json", "'[]'"),
+            ("assets_json", "'[]'"),
             ("embedding_hash", "NULL"),
         ]:
             try:

@@ -24,12 +24,23 @@ class KnowDoGraph:
     # ------------------------------------------------------------------
 
     def add_entry(self, entry: Entry) -> None:
+        md = entry.metadata
+        timestamp = md.timestamp.isoformat() if getattr(md, "timestamp", None) else None
+        verification = (
+            md.verification_status.value
+            if hasattr(md.verification_status, "value")
+            else md.verification_status
+        )
         self._g.add_node(
             entry.id,
             title=entry.title,
             slug=entry.slug,
             entry_type=entry.entry_type.value,
             tags=entry.tags,
+            timestamp=timestamp,
+            usage_count=md.usage_count,
+            trust_score=md.trust_score,
+            verification_status=verification,
         )
 
     def remove_entry(self, entry_id: str) -> None:

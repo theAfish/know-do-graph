@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,12 @@ from core import events as _events
 from core.app_state import graph as _graph
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
-from core.schemas.entry import Entry, EntryType
+from core.schemas.entry import (
+    Entry,
+    EntryType,
+    KNOWN_ASSET_FOLDERS,
+    NodeAsset,
+)
 from core.storage.database import get_db
 from core.storage.repository import EdgeRepository, EntryRepository
 
@@ -203,6 +208,173 @@ def _media_type_for_language(language: str) -> str:
         "r": "text/x-r",
     }
     return mapping.get(language.lower(), "text/plain")
+
+
+# ── Folder-style assets ─────────────────────────────────────────────────────
+
+
+def _asset_meta(entry_id: str, asset: NodeAsset) -> dict:
+    return {
+        "folder": asset.folder,
+        "filename": asset.filename,
+        "path": asset.path,
+        "kind": asset.kind,
+        "language": asset.language,
+        "mime_type": asset.mime_type,
+        "description": asset.description,
+        "requirements": asset.requirements,
+        "size": len(asset.content or ""),
+        "download_url": f"/entries/{entry_id}/assets/{asset.folder}/{asset.filename}",
+        "metadata": asset.metadata,
+    }
+
+
+@router.get("/{entry_id}/assets")
+def list_entry_assets(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
+    """List all assets attached to an entry, grouped by folder.
+
+    Returns ``{ folders: { scripts: [...], references: [...], ... } }``.
+    Use ``GET /entries/{id}/assets/{folder}/{filename}`` to fetch a body.
+    """
+    entry = engine.resolve_identifier(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    grouped: dict[str, list[dict]] = {}
+    for a in entry.assets:
+        grouped.setdefault(a.folder, []).append(_asset_meta(entry.id, a))
+    # Stable ordering: known folders first, then any extras alphabetically
+    ordered = {}
+    for f in KNOWN_ASSET_FOLDERS:
+        if f in grouped:
+            ordered[f] = grouped.pop(f)
+    for f in sorted(grouped.keys()):
+        ordered[f] = grouped[f]
+    return {
+        "entry_id": entry.id,
+        "slug": entry.slug,
+        "folders": ordered,
+        "total": sum(len(v) for v in ordered.values()),
+    }
+
+
+@router.get("/{entry_id}/assets/{folder}")
+def list_entry_assets_in_folder(
+    entry_id: str, folder: str, engine: RetrievalEngine = Depends(_engine)
+):
+    """List assets in a single folder of an entry."""
+    entry = engine.resolve_identifier(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    items = [_asset_meta(entry.id, a) for a in entry.assets if a.folder == folder.lower()]
+    return {"entry_id": entry.id, "folder": folder.lower(), "items": items}
+
+
+@router.get("/{entry_id}/assets/{folder}/{filename:path}")
+def download_entry_asset(
+    entry_id: str,
+    folder: str,
+    filename: str,
+    engine: RetrievalEngine = Depends(_engine),
+):
+    """Fetch the content of an asset.
+
+    - ``kind == "file"``: returns the file body with an ``attachment`` disposition.
+    - ``kind == "text"``: returns the body inline as ``text/markdown`` (or stored mime).
+    - ``kind == "link"``: 302-redirects to the URL stored in ``content``.
+    """
+    entry = engine.resolve_identifier(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if ".." in filename.split("/"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    asset = entry.find_asset(folder, filename)
+    if asset is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No asset '{folder}/{filename}' on entry '{entry_id}'",
+        )
+
+    if asset.kind == "link":
+        url = (asset.content or "").strip()
+        if not url:
+            raise HTTPException(status_code=400, detail="Link asset has empty URL")
+        return RedirectResponse(url=url, status_code=302)
+
+    safe_name = asset.filename.split("/")[-1].replace('"', "")
+    media_type = (
+        asset.mime_type
+        or (_media_type_for_language(asset.language) if asset.language else None)
+        or ("text/markdown" if asset.kind == "text" else "application/octet-stream")
+    )
+    disposition = "inline" if asset.kind == "text" else "attachment"
+    return Response(
+        content=asset.content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{safe_name}"'},
+    )
+
+
+class AssetBody(BaseModel):
+    folder: str
+    filename: str
+    kind: str = "file"  # file | link | text
+    content: str = ""
+    language: Optional[str] = None
+    mime_type: Optional[str] = None
+    description: str = ""
+    requirements: list[str] = []
+    metadata: dict = {}
+
+
+@router.post("/{entry_id}/assets", status_code=201)
+def add_entry_asset(
+    entry_id: str, body: AssetBody, db: Session = Depends(get_db)
+):
+    """Add or replace an asset on an entry.
+
+    If an asset with the same ``folder/filename`` exists it is replaced.
+    """
+    engine = RetrievalEngine(db, _graph)
+    entry = engine.resolve_identifier(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    try:
+        new_asset = NodeAsset(**body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    entry.assets = [
+        a for a in entry.assets
+        if not (a.folder == new_asset.folder and a.filename == new_asset.filename)
+    ]
+    entry.assets.append(new_asset)
+    updated = EntryRepository(db).update(entry)
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Failed to update entry")
+    _graph.add_entry(updated)
+    return _asset_meta(updated.id, new_asset)
+
+
+@router.delete("/{entry_id}/assets/{folder}/{filename:path}", status_code=204)
+def delete_entry_asset(
+    entry_id: str, folder: str, filename: str, db: Session = Depends(get_db)
+):
+    """Delete a single asset from an entry."""
+    engine = RetrievalEngine(db, _graph)
+    entry = engine.resolve_identifier(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    folder_n = folder.lower()
+    before = len(entry.assets)
+    entry.assets = [
+        a for a in entry.assets
+        if not (a.folder == folder_n and a.filename == filename)
+    ]
+    if len(entry.assets) == before:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    updated = EntryRepository(db).update(entry)
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Failed to update entry")
+    _graph.add_entry(updated)
 
 
 # ── Feedback / verification ──────────────────────────────────────────────────
