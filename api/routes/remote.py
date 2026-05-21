@@ -99,6 +99,37 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
               "entry_id": "mace-relaxation", "verdict": "bugged",
               "agent_id": "matcreator-01"}}'
 
+    ═══ SUBMIT KNOWLEDGE FOR LATER DISTILLATION ══════════════════════
+
+    # Deposit a plain-text summary or context dump into the inbox:
+    curl -X POST http://{host}/remote/submit \\
+         -H "Content-Type: application/json" \\
+         -d '{{"title": "MACE geometry optimisation walkthrough",
+              "content": "...",
+              "agent_id": "matcreator-01"}}'
+
+    # Deposit an OpenAI-style conversation transcript:
+    curl -X POST http://{host}/remote/submit \\
+         -H "Content-Type: application/json" \\
+         -d '{{"title": "ASE relaxation session",
+              "format": "openai",
+              "messages": [{{"role":"user","content":"..."}},
+                           {{"role":"assistant","content":"..."}}],
+              "agent_id": "matcreator-01"}}'
+
+    # Check what is waiting in the inbox:
+    curl "http://{host}/remote/inbox"
+
+    # Trigger distillation — the graph agent processes the inbox and creates nodes:
+    curl -X POST http://{host}/remote/distill \\
+         -H "Content-Type: application/json" \\
+         -d '{{}}'
+
+    # Dry-run: preview the distillation prompt without touching the graph:
+    curl -X POST http://{host}/remote/distill \\
+         -H "Content-Type: application/json" \\
+         -d '{{"dry_run": true}}'
+
     # Clear session history:
     curl -X DELETE http://{host}/remote/session/agent-01
 
@@ -109,7 +140,7 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
     GET  /health                     — Server health + graph stats (JSON)
     GET  /docs                       — Interactive API explorer (OpenAPI)
 
-    POST /remote/chat                — Chat with the orchestrator agent
+    POST /remote/chat                — Chat with the orchestrator agent (read-only)
     GET  /remote/search              — Search entries
     GET  /remote/graph               — Graph stats + full node/edge list
     GET  /remote/entry/{{id}}          — Entry by ID, slug, or alias
@@ -118,6 +149,10 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
     POST /entries/{{id}}/feedback      — Direct verification feedback on a node
     GET  /entries/{{id}}/download      — Download a script entry's source code
     DELETE /remote/session/{{id}}      — Clear a session's chat history
+
+    POST /remote/submit              — Deposit raw knowledge into the inbox
+    GET  /remote/inbox               — List pending inbox submissions
+    POST /remote/distill             — Run graph agent to convert inbox into nodes
 
     ═══ NODE VERIFICATION ═══════════════════════════════════════════════
 
@@ -192,6 +227,32 @@ class FeedbackRequest(BaseModel):
     agent_id: Optional[str] = None
 
 
+class SubmitRequest(BaseModel):
+    """Payload for POST /remote/submit.
+
+    External agents use this to deposit raw knowledge (text, conversation
+    transcripts, summaries) into the graph's inbox for later distillation.
+
+    At least one of ``content`` or ``messages`` must be provided.
+    """
+    session_id: Optional[str] = None   # groups submissions; auto-generated if omitted
+    title: Optional[str] = None        # short label for what this submission is about
+    content: Optional[str] = None      # plain-text content or summary
+    # Structured message arrays — supply one of these *instead of* content when
+    # you have a conversation transcript.
+    messages: Optional[list[dict]] = None  # OpenAI / AutoGen format messages list
+    format: str = "text"               # "text" | "openai" | "autogen"
+    tags: list[str] = []
+    agent_id: Optional[str] = None     # identifies the submitting agent
+
+
+class DistillRequest(BaseModel):
+    """Payload for POST /remote/distill."""
+    session_id: Optional[str] = None   # if given, distil only that session's inbox
+    model: Optional[str] = None        # LLM model override for the distillation agent
+    dry_run: bool = False              # if True, return the prompt without running the agent
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
@@ -232,7 +293,7 @@ def remote_chat(body: ChatRequest) -> dict:
 
     session_id = body.session_id or str(uuid.uuid4())
 
-    agent = OrchestratorAgent(graph=_graph, model=body.model)
+    agent = OrchestratorAgent(graph=_graph, model=body.model, read_only=True)
 
     # Restore prior history (everything after the agent's own system prompt)
     if session_id in _sessions:
@@ -362,3 +423,163 @@ def remote_feedback(body: FeedbackRequest) -> dict:
 def remote_clear_session(session_id: str) -> None:
     """Remove the in-memory conversation history for the given session."""
     _sessions.pop(session_id, None)
+
+
+# ── Inbox / distillation ──────────────────────────────────────────────────────
+
+_INBOX_SESSION = "inbox"   # MemGraph session used for all submit() entries
+_INBOX_TAG = "pending-distillation"
+
+
+@router.post(
+    "/submit",
+    status_code=201,
+    summary="Submit raw knowledge for later distillation into the graph",
+    tags=["remote"],
+)
+def remote_submit(body: SubmitRequest) -> dict:
+    """Deposit raw content from an external agent into the knowledge inbox.
+
+    The submission is stored as a ``MemEntry`` (tagged ``pending-distillation``)
+    and is *not* immediately added to the graph.  A human or automated agent
+    can later call ``POST /remote/distill`` to process the inbox.
+
+    Supported formats
+    -----------------
+    * ``format="text"`` (default) — plain ``content`` string.
+    * ``format="openai"``         — ``messages`` list of OpenAI-style dicts.
+    * ``format="autogen"``        — ``messages`` list of AutoGen-style dicts.
+    """
+    if not body.content and not body.messages:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="Provide 'content' or 'messages'.")
+
+    session_id = body.session_id or _INBOX_SESSION
+    mem = MemGraph(session_id=session_id)
+
+    extra_tags = list(body.tags) + [_INBOX_TAG]
+    if body.agent_id:
+        extra_tags.append(f"agent:{body.agent_id}")
+
+    if body.format in ("openai", "autogen") and body.messages:
+        if body.format == "openai":
+            entries = mem.ingest_openai_messages(body.messages, tags=extra_tags, as_single_trace=True)
+        else:
+            entries = mem.ingest_autogen_messages(body.messages, tags=extra_tags, as_single_trace=True)
+        # Prepend a title line if given
+        if body.title and entries:
+            entries[0].content = f"# {body.title}\n\n{entries[0].content}"
+            mem._save()
+        ids = [e.id for e in entries]
+    else:
+        content = body.content or ""
+        if body.title:
+            content = f"# {body.title}\n\n{content}"
+        entry = mem.add(content=content, tags=extra_tags)
+        ids = [entry.id]
+
+    return {"submitted": True, "ids": ids, "session_id": session_id, "tag": _INBOX_TAG}
+
+
+@router.get(
+    "/inbox",
+    summary="List pending knowledge submissions awaiting distillation",
+    tags=["remote"],
+)
+def remote_inbox(session_id: Optional[str] = None, limit: int = 50) -> list[dict]:
+    """Return all MemEntries tagged ``pending-distillation`` that have not yet
+    been promoted into the knowledge graph.
+
+    Pass ``session_id`` to scope results to a specific agent's session; omit
+    it to see all sessions' pending submissions.
+    """
+    sessions = [session_id] if session_id else MemGraph.list_sessions()
+    results: list[dict] = []
+    for sid in sessions:
+        mem = MemGraph(session_id=sid)
+        for e in mem.list():
+            if _INBOX_TAG in e.tags and not e.promoted:
+                results.append({
+                    "id": e.id,
+                    "session_id": e.session_id,
+                    "title": (e.content.splitlines()[0].lstrip("# ") if e.content else ""),
+                    "preview": e.content[:300] if e.content else "",
+                    "tags": e.tags,
+                    "created_at": e.created_at.isoformat(),
+                    "source_format": e.source_format,
+                })
+    results.sort(key=lambda x: x["created_at"])
+    return results[:limit]
+
+
+@router.post(
+    "/distill",
+    summary="Distil pending inbox submissions into knowledge graph nodes",
+    tags=["remote"],
+)
+def remote_distill(body: DistillRequest) -> dict:
+    """Run the GraphAgent over all pending inbox submissions and convert them
+    into proper graph nodes.
+
+    The agent will:
+    1. Read each pending submission.
+    2. Decide which capabilities/procedures/tools to extract.
+    3. Call ``create_entry``, ``create_edge``, etc. to persist them.
+    4. Return a summary of what was created.
+
+    Processed entries are marked ``promoted`` in the inbox so they are not
+    distilled again.
+
+    Set ``dry_run=true`` to preview the distillation prompt without executing it.
+    """
+    import os
+    if not os.environ.get("OPENAI_API_KEY"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured.")
+
+    sessions = [body.session_id] if body.session_id else MemGraph.list_sessions()
+
+    # Collect all un-promoted inbox entries
+    pending: list[tuple[MemGraph, str, str]] = []  # (mem, entry_id, content)
+    for sid in sessions:
+        mem = MemGraph(session_id=sid)
+        for e in mem.list():
+            if _INBOX_TAG in e.tags and not e.promoted:
+                pending.append((mem, e.id, e.content))
+
+    if not pending:
+        return {"distilled": 0, "message": "Inbox is empty — nothing to distill."}
+
+    # Build a prompt that presents all submissions to the GraphAgent
+    blocks = []
+    for i, (_, eid, content) in enumerate(pending, 1):
+        blocks.append(f"--- Submission {i} (id: {eid}) ---\n{content}")
+    combined = "\n\n".join(blocks)
+
+    prompt = (
+        "The following raw knowledge submissions were sent by external agents. "
+        "Please extract the reusable capabilities, procedures, tools, and "
+        "relationships they describe, and add them to the knowledge graph as "
+        "properly structured nodes. Follow the abstraction rules: create generic "
+        "nodes, not overly-specific instances. Skip anything that is conversational "
+        "filler or not worth a standalone node. After processing, briefly list what "
+        "was created.\n\n"
+        + combined
+    )
+
+    if body.dry_run:
+        return {"dry_run": True, "pending_count": len(pending), "prompt": prompt}
+
+    from agents.graph_agent.agent import GraphAgent
+    agent = GraphAgent(graph=_graph, model=body.model)
+    response = agent.chat(prompt)
+
+    # Mark all processed entries as promoted
+    for mem, eid, _ in pending:
+        mem.mark_promoted(eid, target_id="distilled")
+
+    return {
+        "distilled": len(pending),
+        "response": response,
+    }
+

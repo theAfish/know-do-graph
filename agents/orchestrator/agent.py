@@ -70,10 +70,12 @@ class OrchestratorAgent:
         graph: KnowDoGraph,
         model: str | None = None,
         on_step: Callable[[str, dict], None] | None = None,
+        read_only: bool = False,
     ) -> None:
         self._graph = graph
         self._model = model or os.environ.get("ORCHESTRATOR_MODEL", os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL))
         self._on_step = on_step
+        self._read_only = read_only
         self._client = OpenAI(
             api_key=os.environ["OPENAI_API_KEY"],
             base_url=os.environ.get("OPENAI_API_BASE"),
@@ -200,7 +202,7 @@ class OrchestratorAgent:
     def _run_graph_agent(self, message: str) -> str:
         from agents.graph_agent.agent import GraphAgent
 
-        agent = GraphAgent(graph=self._graph, model=self._model, on_step=self._on_step)
+        agent = GraphAgent(graph=self._graph, model=self._model, on_step=self._on_step, read_only=self._read_only)
         return agent.chat(message)
 
     def _run_review_agent(self, instructions: str, batch_size: int) -> str:

@@ -248,7 +248,7 @@ curl http://<host>:<port>/remote
 |--------|------|-------------|
 | `GET` | `/` | Instruction sheet (plain text) |
 | `GET` | `/remote` | Same instruction sheet |
-| `POST` | `/remote/chat` | Chat with the orchestrator agent |
+| `POST` | `/remote/chat` | Chat with the orchestrator agent (read-only; agents and humans) |
 | `GET` | `/remote/search` | Search entries (`?q=&tags=&entry_type=&limit=`) |
 | `GET` | `/remote/graph` | Graph stats + full node/edge dump |
 | `GET` | `/remote/entry/{id}` | Entry by ID, slug, or alias |
@@ -256,6 +256,9 @@ curl http://<host>:<port>/remote
 | `POST` | `/remote/feedback` | Free-form feedback trace; optionally also updates an entry's verification (pass `entry_id` + `verdict`) |
 | `POST` | `/entries/{id}/feedback` | Direct per-entry verification feedback |
 | `DELETE` | `/remote/session/{id}` | Clear a session's chat history |
+| `POST` | `/remote/submit` | Deposit raw knowledge into the inbox (agents and humans) |
+| `GET` | `/remote/inbox` | List pending inbox submissions awaiting distillation (humans) |
+| `POST` | `/remote/distill` | Run graph agent to convert inbox into proper nodes (humans) |
 
 ### Chat (one-shot)
 
@@ -344,6 +347,76 @@ The `MaintenanceAgent` exposes `list_unverified()`, `list_bugged()`, and
 `list_needs_generalization()` so it can sweep for entries needing attention.
 
 Promote feedback traces to entries via `POST /mem/{session_id}/{mem_id}/promote`.
+
+### Knowledge inbox (submit → review → distill)
+
+External agents — and humans — can deposit raw knowledge into an **inbox** for
+later review and distillation into proper graph nodes.  Nothing touches the
+graph until you explicitly trigger distillation, so you stay in control of what
+gets added.
+
+**Step 1 — Submit** (agents or humans)
+
+```bash
+# Plain-text summary or context dump
+curl -X POST http://<host>:<port>/remote/submit \
+     -H "Content-Type: application/json" \
+     -d '{
+       "title": "MACE geometry optimisation walkthrough",
+       "content": "We used MACE-MP-0 to relax a bulk Fe structure ...",
+       "tags": ["mace", "relaxation"],
+       "agent_id": "matcreator-01"
+     }'
+
+# OpenAI-style conversation transcript
+curl -X POST http://<host>:<port>/remote/submit \
+     -H "Content-Type: application/json" \
+     -d '{
+       "title": "ASE relaxation session",
+       "format": "openai",
+       "messages": [
+         {"role": "user",      "content": "How do I relax a structure with ASE?"},
+         {"role": "assistant", "content": "Use BFGS with an Atoms object ..."}
+       ],
+       "agent_id": "matcreator-01"
+     }'
+```
+
+The submission is stored as a memory trace tagged `pending-distillation` and
+returns the entry `id` for reference.
+
+**Step 2 — Review the inbox** (humans)
+
+```bash
+curl http://<host>:<port>/remote/inbox
+# → list of pending submissions with a 300-char preview each
+
+# Scope to a specific agent's session
+curl "http://<host>:<port>/remote/inbox?session_id=matcreator-01"
+```
+
+**Step 3 — Distill** (humans, when ready)
+
+```bash
+# Process all pending submissions and create graph nodes
+curl -X POST http://<host>:<port>/remote/distill \
+     -H "Content-Type: application/json" \
+     -d '{}'
+
+# Preview what the agent would receive without touching the graph
+curl -X POST http://<host>:<port>/remote/distill \
+     -H "Content-Type: application/json" \
+     -d '{"dry_run": true}'
+
+# Distil only one agent's submissions
+curl -X POST http://<host>:<port>/remote/distill \
+     -H "Content-Type: application/json" \
+     -d '{"session_id": "matcreator-01"}'
+```
+
+The graph agent reads every pending submission, extracts reusable
+capabilities/procedures/tools (following the abstraction rules), and marks the
+inbox entries as promoted so they are not processed again.
 
 ### Starting the server for remote access
 

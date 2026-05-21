@@ -44,6 +44,46 @@ _MUTATING_TOOLS: set[str] = {
     "submit_feedback",
 }
 
+# Read-only tools exposed when the agent is instantiated in query-only mode.
+# Mutating tools are excluded so external agents can query the graph without
+# accidentally writing nodes or edges.
+_READ_ONLY_TOOLS: set[str] = {
+    "get_entry",
+    "search_entries",
+    "list_entries",
+    "get_neighbors",
+    "graph_stats",
+    "fetch_url",
+    "web_search",
+    "find_similar_nodes",
+    "get_graph_overview",
+    "list_nodes_by_type",
+    "get_script",
+    "list_scripts",
+    "list_assets",
+    "list_by_verification",
+    "list_needs_generalization",
+}
+
+_READ_ONLY_SYSTEM_PROMPT = """You are a read-only knowledge-graph query assistant for the Know-Do Graph system.
+
+Your role is to **answer questions** about the graph — searching, retrieving, and
+summarising existing entries and relationships. You do NOT add, modify, or delete
+any nodes or edges.
+
+## Search strategy
+Use ``search_entries`` or ``find_similar_nodes`` for free-text queries.
+Use ``get_entry`` to fetch full details of a specific node.
+Use ``get_neighbors`` to explore relationships.
+Use ``get_graph_overview`` to orient yourself when asked general questions.
+Use ``list_nodes_by_type`` to enumerate nodes of a given category.
+
+## Important
+- Do NOT attempt to create, update, delete, or merge any entries or edges.
+- Do NOT call any write operations; only read/query tools are available.
+- Summarise and return what exists in the graph as clearly as possible.
+"""
+
 _SYSTEM_PROMPT = """You are an expert knowledge-graph management assistant for the Know-Do Graph system.
 
 The graph stores structured *entries* (nodes) and typed *edges* between them.
@@ -176,6 +216,7 @@ class GraphAgent:
         graph: KnowDoGraph,
         model: str | None = None,
         on_step: Callable[[str, dict], None] | None = None,
+        read_only: bool = False,
     ) -> None:
         self._graph = graph
         self._model = model or os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL)
@@ -183,8 +224,16 @@ class GraphAgent:
             api_key=os.environ["OPENAI_API_KEY"],
             base_url=os.environ.get("OPENAI_API_BASE"),
         )
-        self._history: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        self._read_only = read_only
+        system_prompt = _READ_ONLY_SYSTEM_PROMPT if read_only else _SYSTEM_PROMPT
+        self._history: list[dict] = [{"role": "system", "content": system_prompt}]
         self._on_step = on_step
+        # Filter tool schemas to read-only set when in query-only mode
+        self._tool_schemas = (
+            [s for s in TOOL_SCHEMAS if s["function"]["name"] in _READ_ONLY_TOOLS]
+            if read_only
+            else TOOL_SCHEMAS
+        )
 
     # ------------------------------------------------------------------
     # Public interface
@@ -215,7 +264,7 @@ class GraphAgent:
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=self._history,
-                tools=TOOL_SCHEMAS,
+                tools=self._tool_schemas,
                 tool_choice="auto",
             )
             message = response.choices[0].message
@@ -253,6 +302,10 @@ class GraphAgent:
 
     def _dispatch(self, name: str, arguments_json: str) -> Any:
         """Call the named tool with the provided JSON arguments."""
+        # Guard: in read-only mode, reject any mutating tool that somehow slips through
+        if self._read_only and name in _MUTATING_TOOLS:
+            return {"error": f"Tool '{name}' is not available in read-only mode."}
+
         func = TOOL_DISPATCH.get(name)
         if func is None:
             return {"error": f"Unknown tool: {name}"}
