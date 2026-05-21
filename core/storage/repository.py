@@ -14,6 +14,19 @@ from core.schemas.entry import Entry
 logger = logging.getLogger(__name__)
 
 
+def _notify(event_type: str, data: dict) -> None:
+    """Best-effort SSE broadcast on graph mutations.
+
+    Safe to call from CLI processes (no event loop → silently no-ops) and from
+    API worker threads. Never raises.
+    """
+    try:
+        from core import events as _events
+        _events.emit(event_type, data)
+    except Exception:
+        pass
+
+
 def _unique_slug(db: Session, base_slug: str, entry_id: str) -> str:
     from core.storage.models import EntryModel
 
@@ -97,6 +110,7 @@ class EntryRepository:
         self._db.refresh(model)
         saved = Entry(**model.to_dict())
         _refresh_embedding(self._db, saved, model)
+        _notify("node_added", {"id": saved.id, "title": saved.title, "slug": saved.slug})
         return saved
 
     def update(self, entry: Entry) -> Optional[Entry]:
@@ -120,6 +134,7 @@ class EntryRepository:
         self._db.refresh(model)
         saved = Entry(**model.to_dict())
         _refresh_embedding(self._db, saved, model)
+        _notify("node_updated", {"id": saved.id, "title": saved.title, "slug": saved.slug})
         return saved
 
     def delete(self, entry_id: str) -> bool:
@@ -132,6 +147,7 @@ class EntryRepository:
         self._db.delete(model)
         self._db.commit()
         vector_store.delete(self._db, entry_id)
+        _notify("node_removed", {"id": entry_id})
         return True
 
     def get_all(self) -> list[Entry]:
@@ -168,6 +184,12 @@ class EdgeRepository:
         )
         self._db.add(model)
         self._db.commit()
+        _notify("edge_added", {
+            "id": edge.id,
+            "source_id": edge.source_id,
+            "target_id": edge.target_id,
+            "relation": edge.relation.value,
+        })
         return edge
 
     def delete(self, edge_id: str) -> bool:
@@ -176,8 +198,10 @@ class EdgeRepository:
         model = self._db.get(EdgeModel, edge_id)
         if not model:
             return False
+        src, tgt, rel = model.source_id, model.target_id, model.relation
         self._db.delete(model)
         self._db.commit()
+        _notify("edge_removed", {"id": edge_id, "source_id": src, "target_id": tgt, "relation": rel})
         return True
 
     def get_all(self) -> list[Edge]:

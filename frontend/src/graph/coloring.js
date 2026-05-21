@@ -3,7 +3,7 @@
 // of several modes ("relevance").
 
 import * as d3 from 'd3';
-import { COLOR_MODES, TYPE_COLORS, VERIFICATION_COLORS, colorFor } from '../constants.js';
+import { COLOR_MODES, TYPE_COLORS, VERIFICATION_COLORS, LEVEL_COLORS, colorFor } from '../constants.js';
 import { state } from '../state.js';
 import { getSelections } from './render.js';
 
@@ -68,6 +68,9 @@ function isRamp(mode) {
 
 function fillFor(d, mode) {
   if (mode === 'type') return colorFor(d.entry_type);
+  if (mode === 'level') {
+    return LEVEL_COLORS[d.skill_level] || MISSING_FILL;
+  }
   if (mode === 'verification') {
     return VERIFICATION_COLORS[d.verification_status] || TYPE_COLORS.generic;
   }

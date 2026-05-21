@@ -31,6 +31,11 @@ class KnowDoGraph:
             if hasattr(md.verification_status, "value")
             else md.verification_status
         )
+        # Effective hierarchical-memory level (explicit override > entry_type default).
+        from core.schemas.entry import implied_level
+
+        level_obj = implied_level(entry.entry_type, md.skill_level)
+        level_value = level_obj.value if level_obj else None
         self._g.add_node(
             entry.id,
             title=entry.title,
@@ -41,6 +46,7 @@ class KnowDoGraph:
             usage_count=md.usage_count,
             trust_score=md.trust_score,
             verification_status=verification,
+            skill_level=level_value,
         )
 
     def remove_entry(self, entry_id: str) -> None:

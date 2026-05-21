@@ -46,7 +46,52 @@ class EntryType(str, Enum):
     data = "data"
     analytical = "analytical"
     memory = "memory"
+    # Hierarchical-memory layers (see SkillLevel).
+    heuristic = "heuristic"   # L3: operational experience / empirical guidance
+    constraint = "constraint" # L4: known failure modes / limitations
     generic = "generic"
+
+
+class SkillLevel(str, Enum):
+    """Progressive-disclosure layer of a node in the hierarchical memory.
+
+    L1 — Capability    : reusable high-level ability (planner-friendly)
+    L2 — Procedure     : executable workflow / task decomposition
+    L3 — Heuristic     : empirical guidance, conditional advice
+    L4 — Constraint    : failure modes, instability regions, do-not-use cases
+
+    Stored on ``EntryMetadata.skill_level``. ``None`` means *unclassified*
+    (legacy / generic content). The level is **orthogonal** to ``entry_type``
+    so that, e.g., a ``procedure`` and a ``workflow`` can both be tagged L2,
+    and an L3 ``heuristic`` can be attached to either.
+    """
+    L1 = "L1"
+    L2 = "L2"
+    L3 = "L3"
+    L4 = "L4"
+
+
+# Default mapping from entry_type → skill level, used by the backfill script
+# and by progressive retrieval when ``skill_level`` is not set explicitly.
+DEFAULT_LEVEL_FOR_TYPE: dict[str, SkillLevel] = {
+    "capability": SkillLevel.L1,
+    "workflow": SkillLevel.L1,
+    "procedure": SkillLevel.L2,
+    "heuristic": SkillLevel.L3,
+    "constraint": SkillLevel.L4,
+}
+
+
+def implied_level(entry_type: "EntryType | str | None", explicit: "SkillLevel | None") -> "SkillLevel | None":
+    """Return the effective skill level for an entry.
+
+    Prefers an explicit metadata tag; otherwise falls back to the default
+    mapping for the entry type.
+    """
+    if explicit is not None:
+        return explicit
+    et = entry_type.value if hasattr(entry_type, "value") else (entry_type or "")
+    return DEFAULT_LEVEL_FOR_TYPE.get(str(et))
 
 
 class RefinementStatus(str, Enum):
@@ -88,6 +133,20 @@ class EntryMetadata(BaseModel):
     # Append-only log of external/internal feedback events.
     # Each item: {timestamp, agent_id, verdict, note, evidence}
     feedback_log: list[dict] = Field(default_factory=list)
+
+    # Hierarchical-memory tagging (progressive disclosure).
+    # Explicit override for the L1/L2/L3/L4 level. When None, callers should
+    # use ``implied_level(entry_type, skill_level)`` to derive it from the
+    # entry_type via DEFAULT_LEVEL_FOR_TYPE.
+    skill_level: Optional[SkillLevel] = None
+    # Free-form metadata for L3 heuristics / L4 constraints:
+    #   {domain: str, confidence: float, papers: [str], notes: str, ...}
+    applicability: dict = Field(default_factory=dict)
+    # Quick-access list of slugs/ids of L4 constraint nodes attached to this
+    # capability/procedure. Kept denormalised so planners can skim risks
+    # without traversing edges. Authoritative source is still ``constraint_on``
+    # edges in the graph.
+    failure_modes: list[str] = Field(default_factory=list)
 
     @field_validator("verification_status", mode="before")
     @classmethod

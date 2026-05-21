@@ -187,6 +187,52 @@ Interactive docs at `http://127.0.0.1:8000/docs` once the server is running.
 | `DELETE` | `/mem/{session}/{mem_id}` | Delete a trace |
 | `POST` | `/mem/{session}/{mem_id}/promote` | Promote trace → KDG entry |
 
+### Progressive retrieval (hierarchical memory)
+
+The graph is organised into four orthogonal **skill levels** so planning
+context stays small and operational details are pulled on demand.
+
+| Level | Stored as | Purpose |
+|-------|-----------|---------|
+| **L1 — Capability** | `entry_type` ∈ {`capability`, `workflow`} | Reusable high-level abilities (planner-facing) |
+| **L2 — Procedure**  | `entry_type` = `procedure` | Executable workflow decomposition |
+| **L3 — Heuristic**  | `entry_type` = `heuristic` | Empirical, conditional guidance (cooling rate ⇒ sp2/sp3 ratio, …) |
+| **L4 — Constraint** | `entry_type` = `constraint` | Known failure modes / instability regions |
+
+`EntryMetadata.skill_level` may override the level explicitly. New typed edges
+wire the layers together:
+
+- `decomposes_to` (L1 → L2)
+- `heuristic_for` (L3 → L1/L2)
+- `constraint_on` (L4 → L1/L2)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/retrieve/plan?goal=…&k=5&include_l2=true` | L1 (+ L2) candidates for a goal — planner context |
+| `GET` | `/retrieve/heuristics?skill=<id\|slug>&k=5` | L3 heuristics attached to a skill (fallback: semantic) |
+| `GET` | `/retrieve/constraints?skill=<id\|slug>&k=5` | L4 constraints / failure modes (fallback: semantic) |
+| `GET` | `/retrieve/expand/{skill}?stages=heuristics,constraints,decomposition` | Bundle used by verifier / debugging loops |
+
+Recommended flow::
+
+    goal → /retrieve/plan
+         → pick skill, execute
+         → on verifier feedback or uncertainty
+         → /retrieve/heuristics  +  /retrieve/constraints
+         → refinement / debugging
+
+GraphAgent exposes the same staging as tools (`retrieve_plan`,
+`retrieve_heuristics`, `retrieve_constraints`) plus `create_heuristic`,
+`create_constraint`, and `decompose_capability` so it can grow the L3/L4
+layer instead of dumping operational knowledge into capability content.
+
+To migrate an existing graph:
+
+```bash
+python scripts/backfill_skill_levels.py --dry-run   # preview
+python scripts/backfill_skill_levels.py             # apply
+```
+
 ---
 
 ## Node verification & self-evolution

@@ -42,6 +42,9 @@ _MUTATING_TOOLS: set[str] = {
     "build_material_interface_workflow",
     "create_material_entry",
     "submit_feedback",
+    "create_heuristic",
+    "create_constraint",
+    "decompose_capability",
 }
 
 # Read-only tools exposed when the agent is instantiated in query-only mode.
@@ -63,6 +66,9 @@ _READ_ONLY_TOOLS: set[str] = {
     "list_assets",
     "list_by_verification",
     "list_needs_generalization",
+    "retrieve_plan",
+    "retrieve_heuristics",
+    "retrieve_constraints",
 }
 
 _READ_ONLY_SYSTEM_PROMPT = """You are a read-only knowledge-graph query assistant for the Know-Do Graph system.
@@ -138,7 +144,42 @@ overlaps an existing one — treat that as a signal to merge or rename.
 - **data** – dataset, structural file, computed result, or reference material (crystals, compounds).
 - **analytical** – analysis method or metric.
 - **memory** – operational memory trace.
+- **heuristic** – L3 conditional, empirical guidance attached to a skill (see hierarchical memory below).
+- **constraint** – L4 known failure mode or limitation attached to a skill.
 - **generic** – catch-all for entries that do not fit above.
+
+## Hierarchical memory (L1–L4) — progressive disclosure
+The graph is organised into four orthogonal levels so planners can pull only
+the level of detail they need:
+
+  - **L1 — Capability**  (`capability` / `workflow`)
+      Reusable high-level ability. Planner-friendly. Stays domain-agnostic
+      when possible. Example: "construct amorphous structures".
+  - **L2 — Procedure**  (`procedure`)
+      Executable workflow decomposition / tool sequencing. Example:
+      "initialize random structure → anneal → controlled quench → relax".
+  - **L3 — Heuristic**  (`heuristic`)
+      Operational experience: conditional, empirical guidance. NOT a universal
+      truth. Example: "cooling rate strongly affects sp2/sp3 ratio".
+  - **L4 — Constraint / Failure Mode**  (`constraint`)
+      Known limitation or failure pattern. Example: "unsuitable for
+      bond-breaking processes". Verifier-guided debugging starts here.
+
+**Critical rules**
+1. Do NOT embed heuristics or failure modes inside a capability's `content`
+   blob. Create them as separate L3 / L4 nodes via `create_heuristic` /
+   `create_constraint` so progressive retrieval can surface them on demand.
+2. Do NOT encode domain-specific details directly into L1 capability names.
+   Prefer "construct amorphous structures" over "construct amorphous carbon
+   via Tersoff melt-quench". System-specific knowledge lives in L3/L4.
+3. When you create an L2 procedure that implements an existing L1 capability,
+   wire the link with `decompose_capability(capability, procedure)`.
+4. For retrieval, prefer the staged tools:
+   - `retrieve_plan(goal)` for planning (returns L1 + L2 only).
+   - `retrieve_heuristics(skill)` once a candidate is chosen.
+   - `retrieve_constraints(skill)` when the verifier reports an issue or you
+     need to estimate execution risk.
+   This avoids polluting the planning context with the full knowledge dump.
 
 ## Verification & feedback
 Every node carries `verification_status` (unverified | self_tested |

@@ -1068,6 +1068,263 @@ def attach_script_to_entry(
 
 
 # ---------------------------------------------------------------------------
+# Hierarchical-memory tools (L3 heuristics / L4 constraints)
+# ---------------------------------------------------------------------------
+
+
+def _create_sidecar(
+    *,
+    skill_id: str,
+    title: str,
+    content: str,
+    entry_type_value: str,
+    skill_level_value: str,
+    edge_relation_value: str,
+    tags: list[str] | None,
+    applicability: dict | None,
+    update_failure_modes: bool,
+    graph: Any,
+) -> dict:
+    """Shared helper for create_heuristic / create_constraint."""
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.edge import Edge, EdgeRelation
+    from core.schemas.entry import Entry, EntryMetadata, EntryType, SkillLevel
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EdgeRepository, EntryRepository
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        skill_entry = engine.resolve_identifier(skill_id)
+        if skill_entry is None:
+            return {"error": f"Skill '{skill_id}' not found."}
+
+        meta = EntryMetadata(
+            skill_level=SkillLevel(skill_level_value),
+            applicability=applicability or {},
+            source_provenance=f"sidecar_of:{skill_entry.slug}",
+        )
+        entry = Entry(
+            title=title,
+            content=content,
+            entry_type=EntryType(entry_type_value),
+            tags=tags or [],
+            metadata=meta,
+        )
+        saved = EntryRepository(db).create(entry)
+        edge = Edge(
+            source_id=saved.id,
+            target_id=skill_entry.id,
+            relation=EdgeRelation(edge_relation_value),
+        )
+        EdgeRepository(db).create(edge)
+
+        if update_failure_modes and entry_type_value == "constraint":
+            if saved.slug not in skill_entry.metadata.failure_modes:
+                skill_entry.metadata.failure_modes.append(saved.slug)
+                EntryRepository(db).update(skill_entry)
+
+    if g is not None:
+        g.add_entry(saved)
+        g.add_edge(edge)
+    return {
+        "id": saved.id,
+        "slug": saved.slug,
+        "title": saved.title,
+        "level": skill_level_value,
+        "attached_to": skill_entry.slug,
+        "relation": edge_relation_value,
+    }
+
+
+def create_heuristic(
+    skill: str,
+    title: str,
+    content: str,
+    tags: list[str] | None = None,
+    domain: str | None = None,
+    confidence: float | None = None,
+    papers: list[str] | None = None,
+    graph: Any = None,
+) -> dict:
+    """Create an L3 heuristic node attached to an L1/L2 *skill*.
+
+    Heuristics are conditional, empirical guidance ("cooling rate strongly
+    affects sp2/sp3 ratio") — NOT universal truths. Use this instead of
+    embedding heuristics inside a capability's content blob.
+
+    Wires a ``heuristic_for`` edge from the new node to *skill*.
+    """
+    applicability: dict = {}
+    if domain:
+        applicability["domain"] = domain
+    if confidence is not None:
+        applicability["confidence"] = float(confidence)
+    if papers:
+        applicability["papers"] = list(papers)
+    return _create_sidecar(
+        skill_id=skill,
+        title=title,
+        content=content,
+        entry_type_value="heuristic",
+        skill_level_value="L3",
+        edge_relation_value="heuristic_for",
+        tags=tags,
+        applicability=applicability,
+        update_failure_modes=False,
+        graph=graph,
+    )
+
+
+def create_constraint(
+    skill: str,
+    title: str,
+    content: str,
+    tags: list[str] | None = None,
+    domain: str | None = None,
+    severity: str | None = None,
+    papers: list[str] | None = None,
+    graph: Any = None,
+) -> dict:
+    """Create an L4 constraint / failure-mode node attached to an L1/L2 *skill*.
+
+    Constraints describe known limitations, instability regions, and failure
+    patterns ("unsuitable for bond-breaking processes"). Wires a
+    ``constraint_on`` edge from the new node to *skill* and appends the new
+    node's slug to ``skill.metadata.failure_modes`` for quick planner access.
+    """
+    applicability: dict = {}
+    if domain:
+        applicability["domain"] = domain
+    if severity:
+        applicability["severity"] = severity
+    if papers:
+        applicability["papers"] = list(papers)
+    return _create_sidecar(
+        skill_id=skill,
+        title=title,
+        content=content,
+        entry_type_value="constraint",
+        skill_level_value="L4",
+        edge_relation_value="constraint_on",
+        tags=tags,
+        applicability=applicability,
+        update_failure_modes=True,
+        graph=graph,
+    )
+
+
+def decompose_capability(
+    capability: str,
+    procedure: str,
+    graph: Any = None,
+) -> dict:
+    """Wire a ``decomposes_to`` edge from an L1 *capability* to an L2 *procedure*.
+
+    Both arguments are entry id/slug/alias of existing nodes. Use this to
+    record that *procedure* is one of the executable decompositions of
+    *capability*. Multiple decompositions per capability are allowed.
+    """
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.edge import Edge, EdgeRelation
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EdgeRepository
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        cap = engine.resolve_identifier(capability)
+        proc = engine.resolve_identifier(procedure)
+        if cap is None:
+            return {"error": f"Capability '{capability}' not found."}
+        if proc is None:
+            return {"error": f"Procedure '{procedure}' not found."}
+        edge = Edge(source_id=cap.id, target_id=proc.id, relation=EdgeRelation.decomposes_to)
+        saved = EdgeRepository(db).create(edge)
+    if g is not None:
+        g.add_edge(saved)
+    return {
+        "edge_id": saved.id,
+        "capability": cap.slug,
+        "procedure": proc.slug,
+        "relation": "decomposes_to",
+    }
+
+
+def retrieve_plan(goal: str, k: int = 5, include_l2: bool = True, graph: Any = None) -> list[dict]:
+    """Stage-1 retrieval: return planner-level skills (L1, optionally L2) for *goal*.
+
+    Excludes heuristics and constraints — fetch them with
+    ``retrieve_heuristics`` / ``retrieve_constraints`` once a candidate is
+    selected.
+    """
+    from core import app_state
+    from core.retrieval.progressive import ProgressiveRetriever
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        ret = ProgressiveRetriever(db, g)
+        results = ret.plan(goal=goal, k=k, include_l2=include_l2)
+    return [
+        {
+            "id": e.id,
+            "slug": e.slug,
+            "title": e.title,
+            "entry_type": e.entry_type.value,
+            "tags": e.tags,
+        }
+        for e in results
+    ]
+
+
+def retrieve_heuristics(skill: str, k: int = 5, graph: Any = None) -> list[dict]:
+    """Stage-2 retrieval: L3 heuristics attached to *skill*."""
+    from core import app_state
+    from core.retrieval.progressive import ProgressiveRetriever
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        ret = ProgressiveRetriever(db, g)
+        results = ret.heuristics_for(skill, k=k)
+    return [
+        {
+            "id": e.id,
+            "slug": e.slug,
+            "title": e.title,
+            "content": e.content,
+            "applicability": e.metadata.applicability,
+        }
+        for e in results
+    ]
+
+
+def retrieve_constraints(skill: str, k: int = 5, graph: Any = None) -> list[dict]:
+    """Stage-3 retrieval: L4 constraints / failure modes for *skill*."""
+    from core import app_state
+    from core.retrieval.progressive import ProgressiveRetriever
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        ret = ProgressiveRetriever(db, g)
+        results = ret.constraints_for(skill, k=k)
+    return [
+        {
+            "id": e.id,
+            "slug": e.slug,
+            "title": e.title,
+            "content": e.content,
+            "applicability": e.metadata.applicability,
+        }
+        for e in results
+    ]
+
+
+# ---------------------------------------------------------------------------
 # OpenAI tool schema definitions
 # ---------------------------------------------------------------------------
 
@@ -1085,7 +1342,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "entry_type": {
                         "type": "string",
                         "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "generic"],
+                                 "environment", "dependency", "data", "analytical", "memory", "heuristic", "constraint", "generic"],
                         "description": "Semantic type of this entry",
                     },
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "List of tags"},
@@ -1110,7 +1367,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "entry_type": {
                         "type": "string",
                         "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "generic"],
+                                 "environment", "dependency", "data", "analytical", "memory", "heuristic", "constraint", "generic"],
                     },
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "aliases": {"type": "array", "items": {"type": "string"}, "description": "Alternative names / synonyms"},
@@ -1369,7 +1626,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "entry_type": {
                         "type": "string",
                         "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "generic"],
+                                 "environment", "dependency", "data", "analytical", "memory", "heuristic", "constraint", "generic"],
                     },
                     "limit": {"type": "integer", "default": 50},
                 },
@@ -1395,6 +1652,134 @@ TOOL_SCHEMAS: list[dict] = [
                     "merge_tags": {"type": "boolean", "default": True, "description": "Merge duplicate's tags into primary"},
                 },
                 "required": ["primary_id", "duplicate_id"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------ #
+    # Hierarchical-memory tools (L1–L4)                                    #
+    # ------------------------------------------------------------------ #
+    {
+        "type": "function",
+        "function": {
+            "name": "create_heuristic",
+            "description": (
+                "Create an L3 heuristic node attached to an L1 capability or L2 procedure. "
+                "Use this for conditional empirical guidance (e.g. 'cooling rate strongly affects "
+                "sp2/sp3 ratio'), NOT for universal truths. Wires a 'heuristic_for' edge."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "Target skill id/slug/alias (L1 or L2)"},
+                    "title": {"type": "string", "description": "Short heuristic title"},
+                    "content": {"type": "string", "description": "Detailed heuristic description"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "domain": {"type": "string", "description": "Applicable domain (e.g. 'amorphous-carbon', 'spintronics')"},
+                    "confidence": {"type": "number", "description": "0.0–1.0 confidence in this heuristic"},
+                    "papers": {"type": "array", "items": {"type": "string"}, "description": "Supporting paper URLs/DOIs"},
+                },
+                "required": ["skill", "title", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_constraint",
+            "description": (
+                "Create an L4 constraint / failure-mode node attached to an L1/L2 skill. "
+                "Use for known limitations, instability regions, or failure patterns (e.g. "
+                "'unsuitable for bond-breaking processes'). Wires a 'constraint_on' edge and "
+                "denormalises the constraint slug into the skill's metadata.failure_modes list."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "Target skill id/slug/alias"},
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "domain": {"type": "string"},
+                    "severity": {"type": "string", "description": "low | medium | high"},
+                    "papers": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["skill", "title", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "decompose_capability",
+            "description": (
+                "Wire a 'decomposes_to' edge from an L1 capability to an L2 procedure that "
+                "implements it. Use to record executable decompositions of high-level skills."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "capability": {"type": "string", "description": "L1 capability id/slug"},
+                    "procedure": {"type": "string", "description": "L2 procedure id/slug"},
+                },
+                "required": ["capability", "procedure"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_plan",
+            "description": (
+                "Stage-1 progressive retrieval: return planner-level skills (L1 capabilities, "
+                "optionally L2 procedures) for a goal. Excludes heuristics/constraints — fetch "
+                "those on demand via retrieve_heuristics / retrieve_constraints once a candidate "
+                "is selected."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "Free-text description of the task"},
+                    "k": {"type": "integer", "default": 5},
+                    "include_l2": {"type": "boolean", "default": True},
+                },
+                "required": ["goal"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_heuristics",
+            "description": (
+                "Stage-2 progressive retrieval: L3 heuristics attached to a selected skill. "
+                "Falls back to semantic search over L3 nodes if no edges exist."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string"},
+                    "k": {"type": "integer", "default": 5},
+                },
+                "required": ["skill"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_constraints",
+            "description": (
+                "Stage-3 progressive retrieval: L4 constraints / failure modes attached to a "
+                "selected skill. Use this when the verifier reports an error or when execution "
+                "uncertainty is high."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string"},
+                    "k": {"type": "integer", "default": 5},
+                },
+                "required": ["skill"],
             },
         },
     },
@@ -1680,4 +2065,11 @@ TOOL_DISPATCH: dict[str, Any] = {
     "submit_feedback": submit_feedback,
     "list_by_verification": list_by_verification,
     "list_needs_generalization": list_needs_generalization,
+    # Hierarchical-memory tools (L1–L4 / progressive retrieval)
+    "create_heuristic": create_heuristic,
+    "create_constraint": create_constraint,
+    "decompose_capability": decompose_capability,
+    "retrieve_plan": retrieve_plan,
+    "retrieve_heuristics": retrieve_heuristics,
+    "retrieve_constraints": retrieve_constraints,
 }

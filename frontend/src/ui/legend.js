@@ -1,4 +1,4 @@
-import { TYPE_COLORS, VERIFICATION_COLORS, COLOR_MODES } from '../constants.js';
+import { TYPE_COLORS, VERIFICATION_COLORS, LEVEL_COLORS, COLOR_MODES } from '../constants.js';
 import { state, on, EVENTS } from '../state.js';
 
 export function initLegend() {
@@ -23,6 +23,11 @@ function renderLegend() {
 
   if (mode === 'verification') {
     renderSwatches(el, 'Verification', VERIFICATION_COLORS);
+    return;
+  }
+
+  if (mode === 'level') {
+    renderSwatches(el, 'Skill level', LEVEL_COLORS);
     return;
   }
 

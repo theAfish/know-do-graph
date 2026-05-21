@@ -19,6 +19,7 @@ from fastapi.responses import PlainTextResponse
 from api.routes import entries, graph as graph_routes, mem as mem_routes, agent as agent_routes
 from api.routes import remote as remote_routes
 from api.routes import remote_sync as remote_sync_routes
+from api.routes import retrieve as retrieve_routes
 from core.app_state import graph
 from core.storage.database import SessionLocal, init_db
 
@@ -46,17 +47,28 @@ async def lifespan(app: FastAPI):
         sync_task = asyncio.create_task(run_periodic_sync(interval))
         logger.info("remote-sync background loop started (interval=%ss)", interval)
 
+    # DB-change watcher: detects mutations written by out-of-process CLI commands
+    # (e.g. `python main.py extract …`) and refreshes the in-memory graph + SSE.
+    watcher_task: asyncio.Task | None = None
+    watch_interval = int(os.environ.get("KDG_DB_WATCH_INTERVAL_SECONDS", "3"))
+    if watch_interval > 0:
+        from core.sync.db_watcher import run_db_watcher
+
+        watcher_task = asyncio.create_task(run_db_watcher(graph, watch_interval))
+        logger.info("db-watcher started (interval=%ss)", watch_interval)
+
     try:
         yield
     finally:
         from core import events as _events
         _events.signal_shutdown()
-        if sync_task is not None:
-            sync_task.cancel()
-            try:
-                await sync_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for task in (sync_task, watcher_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
 
 app = FastAPI(
@@ -82,6 +94,7 @@ app.include_router(mem_routes.router, prefix="/mem", tags=["mem"])
 app.include_router(agent_routes.router, prefix="/agent", tags=["agent"])
 app.include_router(remote_routes.router, prefix="/remote", tags=["remote"])
 app.include_router(remote_sync_routes.router, prefix="/remote-sync", tags=["remote-sync"])
+app.include_router(retrieve_routes.router, prefix="/retrieve", tags=["retrieve"])
 
 
 @app.get("/health", tags=["meta"])
