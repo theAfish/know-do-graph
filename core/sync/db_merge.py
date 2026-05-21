@@ -53,11 +53,18 @@ class MergeReport:
 
 
 def _open_readonly(db_path: Path):
-    """Open a foreign SQLite file as a read-only SQLAlchemy session factory."""
+    """Open a foreign SQLite file as a SQLAlchemy session factory.
+
+    We never write to it, so a plain connection is sufficient. (The previous
+    ``mode=ro&uri=true`` query-string form is mis-parsed by SQLAlchemy's URL
+    parser and silently opens an empty DB.)
+    """
     if not db_path.exists():
         raise FileNotFoundError(db_path)
-    url = f"sqlite:///{db_path.resolve()}?mode=ro&uri=true"
-    eng = create_engine(url, connect_args={"check_same_thread": False, "uri": True})
+    eng = create_engine(
+        f"sqlite:///{db_path.resolve()}",
+        connect_args={"check_same_thread": False},
+    )
     return sessionmaker(autocommit=False, autoflush=False, bind=eng)
 
 
