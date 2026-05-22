@@ -188,6 +188,11 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
                    environment, dependency, data, analytical, memory, generic
       limit      — max results (default 20)
 
+      Search returns a compact summary per entry — id, title, slug,
+      entry_type, tags, aliases, and a short content snippet. Use
+      GET /remote/entry/<id-or-slug> to fetch the full content of any
+      hit you want to inspect.
+
     ═══ NOTES ═══════════════════════════════════════════════════════════
 
       • OPENAI_API_KEY must be set on the server to use chat endpoints.
@@ -326,7 +331,71 @@ def remote_search(
     engine = RetrievalEngine(db, _graph)
     tag_list = [t.strip() for t in tags.split(",")] if tags else None
     results = engine.search_entries(query=q, tags=tag_list, entry_type=entry_type, limit=limit)
-    return [e.model_dump(mode="json") for e in results]
+    return [_summarize_entry(e) for e in results]
+
+
+# Metadata fields that are internal / dev-only and not useful to remote agents.
+_METADATA_INTERNAL_KEYS = {
+    "remote_source",
+    "custom",
+    "feedback_log",
+    "needs_generalization",
+    "extraction_method",
+    "refinement_status",
+    "review_count",
+    "modify_count",
+    "last_reviewed_at",
+}
+
+
+def _clean_entry(entry) -> dict:
+    """Return a full entry dict with internal/dev-only fields stripped.
+
+    Removes ``remote_source``, ``internal_refs``, ``scripts``, ``assets``,
+    and noisy metadata sub-fields that are only relevant for server-side
+    maintenance or sync tracking.
+    """
+    d = entry.model_dump(mode="json")
+    # Drop top-level internal fields.
+    for key in ("internal_refs", "scripts", "assets"):
+        d.pop(key, None)
+    # Strip internal sub-fields from metadata.
+    meta = d.get("metadata") or {}
+    for key in _METADATA_INTERNAL_KEYS:
+        meta.pop(key, None)
+    d["metadata"] = meta
+    return d
+
+
+def _summarize_entry(entry, snippet_words: int = 40) -> dict:
+    """Return a lightweight summary of an entry for search-result listings.
+
+    Includes only identifiers, type/tags, and a short content snippet so that
+    agents can decide which entries to fetch in full via ``/remote/entry/<id>``.
+    """
+    content = (entry.content or "").strip()
+    # Skip YAML frontmatter when present so the snippet shows real prose.
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            content = content[end + 4 :].lstrip()
+    # Drop heading markers / blank lines from the very top.
+    lines = [ln for ln in content.splitlines() if ln.strip()]
+    body = " ".join(lines)
+    words = body.split()
+    snippet = " ".join(words[:snippet_words])
+    if len(words) > snippet_words:
+        snippet += " …"
+
+    return {
+        "id": str(entry.id),
+        "title": entry.title,
+        "slug": entry.slug,
+        "entry_type": entry.entry_type.value if hasattr(entry.entry_type, "value") else entry.entry_type,
+        "tags": list(entry.tags or []),
+        "aliases": list(getattr(entry, "aliases", []) or []),
+        "snippet": snippet,
+    }
 
 
 @router.get(
@@ -355,7 +424,7 @@ def remote_get_entry(entry_id: str, db: Session = Depends(get_db)) -> dict:
     entry = engine.resolve_identifier(entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    return entry.model_dump(mode="json")
+    return _clean_entry(entry)
 
 
 @router.get(
@@ -378,7 +447,7 @@ def remote_get_related(
         raise HTTPException(status_code=404, detail="Entry not found")
     rel: Optional[EdgeRelation] = EdgeRelation(relation) if relation else None
     results = engine.get_related_entries(entry_id, depth=depth, relation=rel)
-    return [e.model_dump(mode="json") for e in results]
+    return [_clean_entry(e) for e in results]
 
 
 @router.post(

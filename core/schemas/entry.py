@@ -349,8 +349,39 @@ class Entry(BaseModel):
         return out
 
 
+# Scientific symbols that should become descriptive words, not their Latin
+# transliterations. Å (U+00C5/U+00E5) decomposes to 'a' via NFKD, but in
+# materials-science titles it is the Ångström unit symbol.
+_CHAR_SUBS: dict[str, str] = {
+    "Å": "angstrom",
+    "å": "angstrom",
+    "µ": "micro",
+    "μ": "micro",
+    "°": "deg",
+    "±": "plus-minus",
+    "×": "x",
+    "·": "-",
+}
+
+
 def _slug_from_title(title: str) -> str:
-    slug = title.lower().strip()
+    import unicodedata
+    # Pre-substitute scientific symbols that have misleading NFKD decompositions.
+    for sym, replacement in _CHAR_SUBS.items():
+        title = title.replace(sym, f" {replacement} ")
+    # Transliterate to ASCII: NFKD decomposes accented letters (é→e);
+    # characters with no Latin decomposition (δ, Δ) are replaced char-by-char
+    # using the last word of their Unicode name (e.g. "GREEK SMALL LETTER DELTA" → "delta").
+    parts: list[str] = []
+    for ch in unicodedata.normalize("NFKD", title):
+        if ch.isascii():
+            parts.append(ch)
+        elif unicodedata.combining(ch):
+            pass  # drop combining diacritics
+        else:
+            name = unicodedata.name(ch, "").lower()
+            parts.append(name.split()[-1] if name else "")
+    slug = "".join(parts).lower().strip()
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = re.sub(r"-+", "-", slug)
