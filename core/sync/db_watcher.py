@@ -32,12 +32,26 @@ def _fingerprint(db) -> tuple:
 
 
 def reload_graph_from_db(graph) -> tuple[int, int]:
-    """Rebuild *graph* from the current DB contents. Returns (node_count, edge_count)."""
+    """Rebuild *graph* from the current DB contents. Returns (node_count, edge_count).
+
+    Also opportunistically deletes any dangling edges (edges whose source or
+    target entry no longer exists). Such rows produced "ghost" nodes in the
+    UI in earlier versions; pruning them here keeps the graph self-healing.
+    """
     from core.storage.repository import EdgeRepository, EntryRepository
 
     with SessionLocal() as db:
-        entries = EntryRepository(db).get_all()
-        edges = EdgeRepository(db).get_all()
+        entry_repo = EntryRepository(db)
+        edge_repo = EdgeRepository(db)
+        entries = entry_repo.get_all()
+        entry_ids = {e.id for e in entries}
+        all_edges = edge_repo.get_all()
+        dangling = [e for e in all_edges if e.source_id not in entry_ids or e.target_id not in entry_ids]
+        if dangling:
+            for e in dangling:
+                edge_repo.delete(e.id)
+            logger.warning("reload_graph_from_db: pruned %d dangling edge(s)", len(dangling))
+        edges = [e for e in all_edges if e.source_id in entry_ids and e.target_id in entry_ids]
     graph.rebuild_from_db(entries, edges)
     return (len(entries), len(edges))
 

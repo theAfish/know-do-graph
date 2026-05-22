@@ -32,12 +32,9 @@ async def lifespan(app: FastAPI):
     init_db()
     from core import events as _events
     _events.set_loop(asyncio.get_running_loop())
-    with SessionLocal() as db:
-        from core.storage.repository import EdgeRepository, EntryRepository
+    from core.sync.db_watcher import reload_graph_from_db
 
-        entries_list = EntryRepository(db).get_all()
-        edges_list = EdgeRepository(db).get_all()
-    graph.rebuild_from_db(entries_list, edges_list)
+    reload_graph_from_db(graph)
 
     sync_task: asyncio.Task | None = None
     if os.environ.get("KDG_REMOTE_SYNC_ENABLED", "").lower() in ("1", "true", "yes", "on"):

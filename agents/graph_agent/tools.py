@@ -231,7 +231,16 @@ def create_edge(
     weight: float = 1.0,
     graph: Any = None,
 ) -> dict:
-    """Create a directed edge between two entries."""
+    """Create a directed edge between two entries.
+
+    Both ``source_id`` and ``target_id`` may be a real entry ID, a slug, or an
+    alias — they are resolved against the database. If either side does not
+    resolve to an existing entry, the edge is rejected (no DB write, no
+    in-memory mutation) and an error is returned so the agent can either fix
+    its arguments or create the missing node first. This prevents the ghost
+    "grey" placeholder nodes that networkx would otherwise auto-create.
+    """
+    from core.retrieval.retrieval import RetrievalEngine
     from core.schemas.edge import Edge, EdgeRelation
     from core.storage.database import SessionLocal
     from core.storage.repository import EdgeRepository
@@ -241,12 +250,34 @@ def create_edge(
     except ValueError:
         rel = EdgeRelation.wikilink
 
-    edge = Edge(source_id=source_id, target_id=target_id, relation=rel, weight=weight)
     with SessionLocal() as db:
+        engine = RetrievalEngine(db, graph)
+        src = engine.resolve_identifier(source_id)
+        tgt = engine.resolve_identifier(target_id)
+        missing = []
+        if src is None:
+            missing.append(source_id)
+        if tgt is None:
+            missing.append(target_id)
+        if missing:
+            return {
+                "error": "edge_endpoint_not_found",
+                "missing": missing,
+                "hint": "Resolve source_id and target_id to existing entries (use search_entries / get_entry) or call create_entry first.",
+            }
+        if src.id == tgt.id:
+            return {"error": "self_loop_rejected", "entry_id": src.id}
+
+        edge = Edge(source_id=src.id, target_id=tgt.id, relation=rel, weight=weight)
         saved = EdgeRepository(db).create(edge)
     if graph is not None:
         graph.add_edge(saved)
-    return {"id": saved.id, "source_id": saved.source_id, "target_id": saved.target_id, "relation": saved.relation.value}
+    return {
+        "id": saved.id,
+        "source_id": saved.source_id,
+        "target_id": saved.target_id,
+        "relation": saved.relation.value,
+    }
 
 
 def delete_edge(edge_id: str, graph: Any = None) -> dict:

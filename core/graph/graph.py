@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import networkx as nx
 
 from core.schemas.edge import Edge, EdgeRelation
 from core.schemas.entry import Entry
+
+logger = logging.getLogger(__name__)
 
 
 class KnowDoGraph:
@@ -57,7 +60,20 @@ class KnowDoGraph:
     # Edges
     # ------------------------------------------------------------------
 
-    def add_edge(self, edge: Edge) -> None:
+    def add_edge(self, edge: Edge) -> bool:
+        """Add an edge to the in-memory graph.
+
+        Returns ``False`` (and logs a warning) if either endpoint is unknown,
+        instead of silently letting networkx auto-create a typeless ghost node.
+        """
+        if not self._g.has_node(edge.source_id) or not self._g.has_node(edge.target_id):
+            logger.warning(
+                "skipping edge %s → %s (%s): endpoint missing from graph",
+                edge.source_id,
+                edge.target_id,
+                edge.relation.value if hasattr(edge.relation, "value") else edge.relation,
+            )
+            return False
         self._g.add_edge(
             edge.source_id,
             edge.target_id,
@@ -65,6 +81,7 @@ class KnowDoGraph:
             relation=edge.relation.value if hasattr(edge.relation, "value") else edge.relation,
             weight=edge.weight,
         )
+        return True
 
     def remove_edge(self, source_id: str, target_id: str) -> None:
         if self._g.has_edge(source_id, target_id):
@@ -169,9 +186,19 @@ class KnowDoGraph:
         }
 
     def rebuild_from_db(self, entries: list[Entry], edges: list[Edge]) -> None:
-        """Clear and rebuild the graph from persisted entries and edges."""
+        """Clear and rebuild the graph from persisted entries and edges.
+
+        Edges whose endpoints are not present in *entries* are skipped (with a
+        warning). They survive in the database — the maintenance agent's
+        ``remove_dangling_edges`` is responsible for pruning them — but they
+        are never allowed to materialise ghost nodes in the in-memory graph.
+        """
         self._g.clear()
         for entry in entries:
             self.add_entry(entry)
+        skipped = 0
         for edge in edges:
-            self.add_edge(edge)
+            if not self.add_edge(edge):
+                skipped += 1
+        if skipped:
+            logger.warning("rebuild_from_db: skipped %d dangling edge(s)", skipped)

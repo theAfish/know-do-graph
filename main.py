@@ -46,13 +46,9 @@ def _init() -> None:
 
 def _rebuild_graph() -> None:
     from core import app_state
-    from core.storage.database import SessionLocal
-    from core.storage.repository import EdgeRepository, EntryRepository
+    from core.sync.db_watcher import reload_graph_from_db
 
-    with SessionLocal() as db:
-        entries = EntryRepository(db).get_all()
-        edges = EdgeRepository(db).get_all()
-    app_state.graph.rebuild_from_db(entries, edges)
+    reload_graph_from_db(app_state.graph)
 
 
 # ===========================================================================
