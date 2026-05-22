@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from core.app_state import graph as _graph
 from core.memory.memgraph import MemGraph
+from core.retrieval.progressive import ProgressiveRetriever
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
 from core.schemas.entry import EntryType
@@ -76,6 +77,14 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
 
     # Get related entries (BFS traversal, default depth=1):
     curl "http://{host}/remote/entry/<id>/related?depth=2"
+
+    # Progressive disclosure — when an entry has attached L3/L4 sidecar
+    # nodes, the entry response includes a `progressive_hints` block. These
+    # endpoints behave like /remote/search but are scoped to the L3/L4
+    # nodes attached to the watched entry. Returns summaries — fetch full
+    # content via /remote/entry/<id>:
+    curl "http://{host}/remote/entry/<id>/heuristics?q=keywords&limit=10"
+    curl "http://{host}/remote/entry/<id>/constraints?q=keywords&limit=10"
 
     # Graph stats + full node/edge dump:
     curl "http://{host}/remote/graph"
@@ -145,6 +154,8 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
     GET  /remote/graph               — Graph stats + full node/edge list
     GET  /remote/entry/{{id}}          — Entry by ID, slug, or alias
     GET  /remote/entry/{{id}}/related  — Related entries (BFS)
+    GET  /remote/entry/{{id}}/heuristics  — Attached L3 heuristics (experience); scoped search, supports q/tags/limit
+    GET  /remote/entry/{{id}}/constraints — Attached L4 constraints (limits); scoped search, supports q/tags/limit
     POST /remote/feedback            — Free-form trace; optionally also updates an entry
     POST /entries/{{id}}/feedback      — Direct verification feedback on a node
     GET  /entries/{{id}}/download      — Download a script entry's source code
@@ -195,10 +206,6 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
 
     ═══ NOTES ═══════════════════════════════════════════════════════════
 
-      • OPENAI_API_KEY must be set on the server to use chat endpoints.
-        Optionally set OPENAI_API_BASE to point at a custom LLM endpoint.
-      • session_id is an arbitrary string; history is kept in server memory
-        for the lifetime of the process.
       • For full CRUD access use /entries, /graph, /mem, and /agent routes.
       • Human-readable graph explorer:  http://{host}/ui
       • Full API reference:             http://{host}/docs
@@ -336,6 +343,7 @@ def remote_search(
 
 # Metadata fields that are internal / dev-only and not useful to remote agents.
 _METADATA_INTERNAL_KEYS = {
+    # Sync / maintenance
     "remote_source",
     "custom",
     "feedback_log",
@@ -345,15 +353,32 @@ _METADATA_INTERNAL_KEYS = {
     "review_count",
     "modify_count",
     "last_reviewed_at",
+    # Timestamps — not actionable for consumers
+    "timestamp",
 }
 
 
+def _strip_empty(d: dict) -> dict:
+    """Recursively remove None values and empty containers from a dict."""
+    out = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        if isinstance(v, dict):
+            v = _strip_empty(v)
+            if not v:
+                continue
+        elif isinstance(v, list) and len(v) == 0:
+            continue
+        out[k] = v
+    return out
+
+
 def _clean_entry(entry) -> dict:
-    """Return a full entry dict with internal/dev-only fields stripped.
+    """Return a full entry dict with internal/dev-only and empty fields stripped.
 
     Removes ``remote_source``, ``internal_refs``, ``scripts``, ``assets``,
-    and noisy metadata sub-fields that are only relevant for server-side
-    maintenance or sync tracking.
+    noisy metadata sub-fields, and any null/empty values.
     """
     d = entry.model_dump(mode="json")
     # Drop top-level internal fields.
@@ -363,7 +388,11 @@ def _clean_entry(entry) -> dict:
     meta = d.get("metadata") or {}
     for key in _METADATA_INTERNAL_KEYS:
         meta.pop(key, None)
-    d["metadata"] = meta
+    d["metadata"] = _strip_empty(meta)
+    # Strip null / empty top-level fields (but keep metadata even if empty).
+    d = _strip_empty(d)
+    if "metadata" not in d:
+        d["metadata"] = {}
     return d
 
 
@@ -419,12 +448,144 @@ def remote_graph_overview() -> dict:
     tags=["remote"],
 )
 def remote_get_entry(entry_id: str, db: Session = Depends(get_db)) -> dict:
-    """Retrieve a single entry by its UUID, slug, or any registered alias."""
+    """Retrieve a single entry by its UUID, slug, or any registered alias.
+
+    The response is augmented with a ``progressive_hints`` block that tells
+    the caller how many L3 heuristics (operational experience) and L4
+    constraints (known limitations / failure modes) are **directly attached**
+    to this node via graph edges, plus the URLs to fetch them. This lets a
+    remote agent decide whether to drill down for additional guidance
+    without paying the cost of loading those bodies up front.
+    """
     engine = RetrievalEngine(db, _graph)
     entry = engine.resolve_identifier(entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    return _clean_entry(entry)
+    data = _clean_entry(entry)
+
+    retriever = ProgressiveRetriever(db, _graph)
+    counts = retriever.count_attached(entry.id)
+    data["progressive_hints"] = _build_progressive_hints(entry.id, counts)
+    return data
+
+
+def _build_progressive_hints(entry_id: str, counts: dict) -> dict:
+    """Build the progressive-disclosure hint block for a single entry.
+
+    Only counts nodes directly attached via ``heuristic_for`` /
+    ``constraint_on`` / ``warning_about`` edges — i.e. the L3/L4 sidecars
+    of the **currently watched node**, not the whole graph.
+    """
+    h = int(counts.get("heuristics", 0))
+    c = int(counts.get("constraints", 0))
+    hints: dict = {
+        "heuristics_count": h,
+        "constraints_count": c,
+        "heuristics_url": f"/remote/entry/{entry_id}/heuristics",
+        "constraints_url": f"/remote/entry/{entry_id}/constraints",
+    }
+    if h or c:
+        hints["message"] = (
+            f"This entry has {h} attached heuristic(s) (operational experience) "
+            f"and {c} attached constraint(s) (known limitations / failure modes) "
+            f"that may guide your subsequent use. "
+            f"These endpoints behave like /remote/search but are scoped to the "
+            f"nodes attached to THIS entry — pass ?q=<keywords> to narrow down "
+            f"(otherwise the top results by usage are returned):\n"
+            f"  GET /remote/entry/{entry_id}/heuristics?q=...&limit=10\n"
+            f"  GET /remote/entry/{entry_id}/constraints?q=...&limit=10"
+        )
+    return hints
+
+
+@router.get(
+    "/entry/{entry_id}/heuristics",
+    summary="Search L3 heuristics attached to an entry",
+    tags=["remote"],
+)
+def remote_get_heuristics(
+    entry_id: str,
+    q: Optional[str] = None,
+    tags: Optional[str] = None,
+    limit: int = 10,
+    mode: str = "hybrid",
+    db: Session = Depends(get_db),
+) -> dict:
+    """Search the L3 heuristics (operational experience) attached to *entry_id*.
+
+    Scope is restricted to nodes connected to this entry via ``heuristic_for``
+    edges — so even if the graph contains thousands of L3 nodes overall, only
+    the ones attached to this entry are considered.
+
+    - ``q`` — free-text query; uses the same hybrid keyword+vector ranking as
+      ``/remote/search``. Omit to get the top results by usage_count.
+    - ``tags`` — comma-separated tag filter.
+    - ``limit`` — max results returned (default 10).
+    - ``mode`` — ``hybrid`` (default) | ``semantic`` | ``keyword``.
+
+    Returns summaries (id / title / snippet / tags), not full bodies — use
+    ``GET /remote/entry/<id>`` to fetch the full content of any hit.
+    """
+    engine = RetrievalEngine(db, _graph)
+    if not engine.resolve_identifier(entry_id):
+        raise HTTPException(status_code=404, detail="Entry not found")
+    retriever = ProgressiveRetriever(db, _graph)
+    tag_list = [t.strip() for t in tags.split(",")] if tags else None
+    results, total = retriever.search_attached(
+        skill=entry_id,
+        kind="heuristics",
+        query=q,
+        tags=tag_list,
+        limit=limit,
+        mode=mode,
+    )
+    return {
+        "total_attached": total,
+        "returned": len(results),
+        "query": q,
+        "results": [_summarize_entry(e) for e in results],
+    }
+
+
+@router.get(
+    "/entry/{entry_id}/constraints",
+    summary="Search L4 constraints attached to an entry",
+    tags=["remote"],
+)
+def remote_get_constraints(
+    entry_id: str,
+    q: Optional[str] = None,
+    tags: Optional[str] = None,
+    limit: int = 10,
+    mode: str = "hybrid",
+    db: Session = Depends(get_db),
+) -> dict:
+    """Search the L4 constraints / failure modes attached to *entry_id*.
+
+    Scope is restricted to nodes connected to this entry via ``constraint_on``
+    or ``warning_about`` edges. Same query interface as ``/heuristics``.
+
+    Returns summaries; fetch full content via ``GET /remote/entry/<id>``.
+    """
+    engine = RetrievalEngine(db, _graph)
+    if not engine.resolve_identifier(entry_id):
+        raise HTTPException(status_code=404, detail="Entry not found")
+    retriever = ProgressiveRetriever(db, _graph)
+    tag_list = [t.strip() for t in tags.split(",")] if tags else None
+    results, total = retriever.search_attached(
+        skill=entry_id,
+        kind="constraints",
+        query=q,
+        tags=tag_list,
+        limit=limit,
+        mode=mode,
+    )
+    return {
+        "total_attached": total,
+        "returned": len(results),
+        "query": q,
+        "results": [_summarize_entry(e) for e in results],
+    }
 
 
 @router.get(

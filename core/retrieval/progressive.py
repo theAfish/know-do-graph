@@ -259,6 +259,128 @@ class ProgressiveRetriever:
         )
         return [r.source_id for r in rows]
 
+    # ------------------------------------------------------------------
+    # Cheap counts (used by /remote/entry to surface a progressive hint)
+    # ------------------------------------------------------------------
+
+    def count_attached(self, skill: str) -> dict:
+        """Return counts of L3 heuristics and L4 constraints **edge-attached** to
+        *skill* (id, slug, or alias).
+
+        This is a cheap probe — no entry bodies are loaded and no semantic
+        fallback is performed. It deliberately only counts nodes that are
+        explicitly connected to the current node via ``heuristic_for`` /
+        ``constraint_on`` / ``warning_about`` edges, so callers can prompt
+        the user / agent to drill down only when there is something to find.
+        """
+        anchor = self._engine.resolve_identifier(skill)
+        if anchor is None:
+            return {"resolved": False, "heuristics": 0, "constraints": 0}
+
+        heur = len(self._inbound_sources(anchor.id, (EdgeRelation.heuristic_for,)))
+        cons = len(
+            self._inbound_sources(
+                anchor.id,
+                (EdgeRelation.constraint_on, EdgeRelation.warning_about),
+            )
+        )
+        return {
+            "resolved": True,
+            "anchor_id": anchor.id,
+            "heuristics": heur,
+            "constraints": cons,
+        }
+
+    # ------------------------------------------------------------------
+    # Scoped search — search inside the L3/L4 sidecars of a single skill
+    # ------------------------------------------------------------------
+
+    # ``kind`` → (edge relations to follow inbound, expected target level)
+    _SIDECAR_KINDS: dict[str, tuple[tuple[EdgeRelation, ...], SkillLevel]] = {
+        "heuristics": ((EdgeRelation.heuristic_for,), SkillLevel.L3),
+        "constraints": (
+            (EdgeRelation.constraint_on, EdgeRelation.warning_about),
+            SkillLevel.L4,
+        ),
+    }
+
+    def search_attached(
+        self,
+        skill: str,
+        kind: str,
+        query: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        limit: int = 10,
+        mode: str = "hybrid",
+    ) -> tuple[list[Entry], int]:
+        """Search the L3/L4 sidecar nodes attached to *skill*.
+
+        Returns ``(entries, total_attached)`` where ``total_attached`` is the
+        size of the scope (useful for paginating / warning the caller when
+        the scope is large).
+
+        - ``kind`` is ``"heuristics"`` (L3) or ``"constraints"`` (L4).
+        - When ``query`` is given, runs the same hybrid keyword+vector search
+          as :meth:`RetrievalEngine.search_entries` but **restricts the
+          candidate pool to the attached sidecar nodes**.
+        - When ``query`` is None, returns up to ``limit`` of the attached
+          nodes ordered by ``usage_count`` desc so the most-used experience
+          / most-cited limitation surfaces first.
+
+        An L3/L4 node attached to multiple parents is unaffected — we scope
+        by inbound edges to *this* anchor, so the same node will correctly
+        appear under each parent it is attached to.
+        """
+        spec = self._SIDECAR_KINDS.get(kind)
+        if spec is None:
+            raise ValueError(f"Unknown sidecar kind: {kind!r}")
+        relations, _target_level = spec
+
+        anchor = self._engine.resolve_identifier(skill)
+        if anchor is None:
+            return [], 0
+
+        scope_ids = set(self._inbound_sources(anchor.id, relations))
+        total = len(scope_ids)
+        if not scope_ids:
+            return [], 0
+
+        # No query → return a usage-ranked slice of the scope. Cheap path
+        # that never loads the whole scope when it's large.
+        if not query:
+            rows = (
+                self._db.query(EntryModel)
+                .filter(EntryModel.id.in_(scope_ids))
+                .all()
+            )
+            entries = [Entry(**r.to_dict()) for r in rows]
+            entries = self._filter_by_tags(entries, tags)
+            entries.sort(
+                key=lambda e: (e.metadata.usage_count or 0),
+                reverse=True,
+            )
+            return entries[:limit], total
+
+        # With query → hybrid search, then intersect with scope. We over-fetch
+        # so the post-filter still has room to return ``limit`` items.
+        oversample = max(limit * 10, 50)
+        ranked = self._engine.search_entries(
+            query=query,
+            tags=tags,
+            limit=oversample,
+            mode=mode,
+        )
+        scoped = [e for e in ranked if e.id in scope_ids]
+        return scoped[:limit], total
+
+    @staticmethod
+    def _filter_by_tags(entries: list[Entry], tags: Optional[list[str]]) -> list[Entry]:
+        if not tags:
+            return entries
+        wanted = {t.lower() for t in tags}
+        return [e for e in entries if any(t.lower() in wanted for t in (e.tags or []))]
+
+
     @staticmethod
     def _summarize(entry: Entry) -> dict:
         level = implied_level(entry.entry_type, entry.metadata.skill_level)
