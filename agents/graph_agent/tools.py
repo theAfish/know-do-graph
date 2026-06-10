@@ -1496,7 +1496,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "relation": {
                         "type": "string",
                         "enum": ["dependency", "compatible_with", "alternative_to", "related_workflow",
-                                 "generated_from", "memory_of", "refinement_of", "derived_from",
+                                 "generated_from", "memory_of", "related_memory", "refinement_of", "derived_from",
                                  "warning_about", "cited_by", "wikilink", "prerequisite", "replacement",
                                  "execution_pathway", "transformation", "provenance", "compatibility",
                                  "implements", "uses", "documents"],

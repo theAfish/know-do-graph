@@ -61,11 +61,14 @@ graph.connect(skill.id, procedure.id, relation=EdgeRelation.decomposes_to)
 planner_context = graph.plan("relax this crystal")
 execution_context = graph.expand(skill.slug, stages=["decomposition"])
 
-graph.memory("run-42").add(
+memory = graph.memory("run-42")
+first = memory.add(
     "FIRE converged at fmax=0.03.",
     tags=["success"],
     success=True,
 )
+second = memory.add("The result reproduced with a tighter force threshold.")
+memory.connect(first.id, second.id)
 graph.close()
 ```
 
@@ -650,7 +653,10 @@ want the `/remote/chat` endpoint to work.
 ## Connecting agent frameworks
 
 MemGraph accepts session data in whichever format the agent framework already
-produces.  Pick the adapter that matches your stack.
+produces. Memory traces are stored in the same SQLite database as all other
+nodes with `entry_type="memory"`. Session and ingestion details are retained in
+entry metadata, and memory nodes can be connected with normal graph edges.
+Pick the adapter that matches your stack.
 
 ### OpenAI / OpenAI-compatible APIs
 
@@ -756,7 +762,7 @@ Supported `entry_type` values: `capability`, `procedure`, `workflow`, `tool`,
 `repository`, `environment`, `dependency`, `data`, `analytical`, `memory`, `generic`.
 
 Supported edge `relation` values: `dependency`, `compatible_with`, `alternative_to`,
-`related_workflow`, `generated_from`, `memory_of`, `refinement_of`, `derived_from`,
+`related_workflow`, `generated_from`, `memory_of`, `related_memory`, `refinement_of`, `derived_from`,
 `warning_about`, `cited_by`, `wikilink`, `prerequisite`, `replacement`,
 `execution_pathway`, `transformation`, `provenance`, `compatibility`.
 
@@ -787,7 +793,7 @@ api/
 
 data/
   know_do_graph.db    Default working SQLite database
-  memory/             Per-session JSON memory files
+  memory/             Legacy JSON memory files (imported into SQLite on first access)
   nodes/              YAML entry exports (via `graph export`)
 
 examples/

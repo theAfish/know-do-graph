@@ -49,8 +49,16 @@ class RawIngestRequest(BaseModel):
 
 
 class PromoteRequest(BaseModel):
-    entry_type: str = "memory"
+    entry_type: str = "generic"
     tags: list[str] = []
+
+
+class ConnectRequest(BaseModel):
+    source_id: str
+    target_id: str
+    relation: str = "related_memory"
+    weight: float = 1.0
+    metadata: dict[str, Any] = {}
 
 
 # ------------------------------------------------------------------
@@ -156,6 +164,35 @@ def delete_trace(session_id: str, mem_id: str):
     mg = MemGraph(session_id)
     if not mg.delete(mem_id):
         raise HTTPException(status_code=404, detail="Memory trace not found")
+
+
+@router.get("/{session_id}/edges", response_model=list[dict], tags=["mem"])
+def list_memory_edges(session_id: str, mem_id: Optional[str] = None):
+    """List memory-to-memory edges touching nodes in a session."""
+    from core.memory.memgraph import MemGraph
+
+    return [
+        edge.model_dump(mode="json")
+        for edge in MemGraph(session_id).edges(mem_id)
+    ]
+
+
+@router.post("/{session_id}/edges", response_model=dict, status_code=201, tags=["mem"])
+def connect_memory(session_id: str, body: ConnectRequest):
+    """Create a typed edge between two memory nodes."""
+    from core.memory.memgraph import MemGraph
+
+    try:
+        edge = MemGraph(session_id).connect(
+            body.source_id,
+            body.target_id,
+            relation=body.relation,
+            weight=body.weight,
+            metadata=body.metadata,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return edge.model_dump(mode="json")
 
 
 @router.post("/{session_id}/{mem_id}/promote", response_model=dict, tags=["mem"])
