@@ -9,6 +9,35 @@ The graph emerges naturally from `[[wikilink]]` references between entries.
 
 ## Quick start
 
+### Install from PyPI
+
+```bash
+pip install know-do-graph
+
+# Create an empty ./data/know_do_graph.db
+know-do-graph init
+
+# Or start from the database bundled with the package
+know-do-graph init --starter
+
+know-do-graph serve
+```
+
+The starter database is copied into the working location; the installed package
+is never used as the writable database. Existing databases are not replaced
+unless `--force` is explicitly provided.
+
+To choose another database path, set `KDG_DB_PATH` in the environment or in a
+`.env` file in the directory where the command is run:
+
+```bash
+KDG_DB_PATH=./my-data/my-memory.db
+```
+
+Relative `KDG_DB_PATH` values are resolved from the current working directory.
+
+### Install from source
+
 ```bash
 # 1. Create and activate a virtual environment
 python -m venv .venv
@@ -49,7 +78,21 @@ cd frontend && npm run dev
 
 ## CLI reference
 
-All commands are available via `python main.py`.
+Commands are available via `know-do-graph` after a package installation or
+`python main.py` from a source checkout.
+
+### Database initialization
+
+```bash
+# Create an empty database if one does not exist
+know-do-graph init
+
+# Copy the bundled starter database
+know-do-graph init --starter
+
+# Explicitly replace an existing database with the starter
+know-do-graph init --starter --force
+```
 
 ### Entry management
 
@@ -618,7 +661,7 @@ api/
     remote.py         Remote agent access + instruction sheet endpoints
 
 data/
-  know_do_graph.db    SQLite database (auto-created)
+  know_do_graph.db    Default working SQLite database
   memory/             Per-session JSON memory files
   nodes/              YAML entry exports (via `graph export`)
 
@@ -656,7 +699,22 @@ raw mem trace  →  linked note  →  refined capability entry  →  validated k
 
 ## Development notes
 
-- The SQLite database is at `data/know_do_graph.db` and is created automatically on first run.
+- The default SQLite database is `./data/know_do_graph.db`, relative to the
+  directory where the process is started.
+- Set `KDG_DB_PATH` to configure a different filename or path.
+- `init` creates an empty database; `init --starter` copies the bundled starter
+  database to the working path.
+- To package the current development database as the next starter, stop the API
+  server and run:
+
+  ```bash
+  ./scripts/build_starter.sh
+  ```
+
+  The script checkpoints `data/know_do_graph.db`, copies it to the tracked
+  release snapshot at `assets/starter.db`, builds the source distribution and
+  wheel into `dist/`, and verifies that the wheel contains the complete starter
+  database. The live database under `data/` is ignored by Git.
 - The in-memory networkx graph is rebuilt from the database on every server startup (or via `MaintenanceAgent.rebuild_graph()`).
 - All timestamps are UTC.
 - Vector indexing and heavyweight graph databases are intentionally deferred — the architecture supports adding them later without structural changes.

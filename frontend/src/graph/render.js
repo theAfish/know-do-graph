@@ -83,11 +83,15 @@ export function render(nodes, edges, initialAlpha = 0.8) {
     .append('g')
     .attr('class', 'node');
 
+  const isPlaceholder = (d) => Array.isArray(d.tags) && d.tags.includes('placeholder');
+
   nodeSel
     .append('circle')
     .attr('r', (d) => rScale(degreeMap[d.id] || 0))
-    .attr('fill', (d) => colorFor(d.entry_type))
-    .attr('stroke', (d) => d3.color(colorFor(d.entry_type)).brighter(1).toString());
+    .attr('fill', (d) => (isPlaceholder(d) ? 'transparent' : colorFor(d.entry_type)))
+    .attr('stroke', (d) => d3.color(colorFor(d.entry_type)).brighter(1).toString())
+    .attr('stroke-width', (d) => (isPlaceholder(d) ? 2 : 1))
+    .attr('stroke-dasharray', (d) => (isPlaceholder(d) ? '4 3' : null));
 
   nodeSel
     .append('text')

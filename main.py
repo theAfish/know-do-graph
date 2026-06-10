@@ -44,6 +44,48 @@ def _init() -> None:
     init_db()
 
 
+@app.command("init")
+def initialize(
+    starter: bool = typer.Option(
+        False,
+        "--starter",
+        help="Initialize from the packaged starter database instead of an empty database.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite an existing database. Only valid with --starter.",
+    ),
+) -> None:
+    """Initialize the configured working database."""
+    from core.storage.database import DB_PATH, init_db, install_starter_database
+
+    if force and not starter:
+        raise typer.BadParameter("--force can only be used with --starter")
+
+    if starter:
+        try:
+            install_starter_database(force=force)
+        except FileExistsError:
+            console.print(
+                f"[yellow]Database already exists:[/yellow] {DB_PATH}\n"
+                "Use [cyan]--force[/cyan] to replace it with the starter database."
+            )
+            raise typer.Exit(1)
+        except FileNotFoundError as exc:
+            console.print(f"[red]Starter database unavailable:[/red] {exc}")
+            raise typer.Exit(1)
+        console.print(f"[green]Starter database installed:[/green] {DB_PATH}")
+        return
+
+    existed = DB_PATH.exists()
+    init_db()
+    if existed:
+        console.print(f"[yellow]Database already exists:[/yellow] {DB_PATH}")
+    else:
+        console.print(f"[green]Empty database created:[/green] {DB_PATH}")
+
+
 def _rebuild_graph() -> None:
     from core import app_state
     from core.sync.db_watcher import reload_graph_from_db

@@ -99,11 +99,13 @@ export function applyColoring() {
 
   sceneSel
     .selectAll('.node circle')
-    .attr('fill', (d) => fillFor(d, mode))
+    .attr('fill', (d) => (Array.isArray(d.tags) && d.tags.includes('placeholder') ? 'transparent' : fillFor(d, mode)))
     .attr('stroke', (d) => {
       const c = d3.color(fillFor(d, mode));
       return c ? c.brighter(1).toString() : '#fff';
-    });
+    })
+    .attr('stroke-dasharray', (d) => (Array.isArray(d.tags) && d.tags.includes('placeholder') ? '4 3' : null))
+    .attr('stroke-width', (d) => (Array.isArray(d.tags) && d.tags.includes('placeholder') ? 2 : 1));
 
   const ramp = isRamp(mode);
   sceneSel.selectAll('.node .score-label').each(function (d) {

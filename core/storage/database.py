@@ -1,13 +1,22 @@
+import os
+import shutil
+from importlib import resources
 from pathlib import Path
 from typing import Generator
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
-DATA_DIR.mkdir(exist_ok=True)
 
-DB_PATH = DATA_DIR / "know_do_graph.db"
+def _database_path() -> Path:
+    configured_path = os.environ.get("KDG_DB_PATH")
+    if configured_path:
+        return Path(configured_path).expanduser().resolve()
+    return (Path.cwd() / "data" / "know_do_graph.db").resolve()
+
+
+DB_PATH = _database_path()
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
@@ -31,6 +40,29 @@ except ImportError:
     pass
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def install_starter_database(*, force: bool = False) -> Path:
+    """Copy the packaged starter DB to the configured working DB path."""
+    if DB_PATH.exists() and not force:
+        raise FileExistsError(DB_PATH)
+
+    packaged_starter = resources.files("core").joinpath("resources/starter.db")
+    source_checkout_starter = Path(__file__).resolve().parents[2] / "assets" / "starter.db"
+
+    if packaged_starter.is_file():
+        starter = packaged_starter
+    elif source_checkout_starter.is_file():
+        starter = source_checkout_starter
+    else:
+        raise FileNotFoundError("The starter database is not included in this installation.")
+
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    engine.dispose()
+    with resources.as_file(starter) as starter_path:
+        if starter_path.resolve() != DB_PATH:
+            shutil.copy2(starter_path, DB_PATH)
+    return DB_PATH
 
 
 def get_db() -> Generator[Session, None, None]:
