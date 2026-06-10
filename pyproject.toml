@@ -22,10 +22,6 @@ dependencies = [
     "duckduckgo-search>=6.0",
     "python-dotenv>=1.0",
     "prompt_toolkit>=3.0",
-]
-
-[project.optional-dependencies]
-embeddings = [
     "sentence-transformers>=2.7",
     "sqlite-vec>=0.1.6",
     "numpy>=1.24",
