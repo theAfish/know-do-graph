@@ -36,6 +36,102 @@ KDG_DB_PATH=./my-data/my-memory.db
 
 Relative `KDG_DB_PATH` values are resolved from the current working directory.
 
+### Python API
+
+Use the high-level client to embed the graph directly in an agent process:
+
+```python
+from know_do_graph import EdgeRelation, EntryType, KnowDoGraph
+
+graph = KnowDoGraph("data/my_agent.db")
+
+skill = graph.add(
+    "Relax an atomic structure",
+    entry_type=EntryType.capability,
+    content="Choose a calculator, then run [[ASE Relaxation]].",
+    tags=["atomistic"],
+)
+procedure = graph.add(
+    "ASE Relaxation",
+    entry_type=EntryType.procedure,
+    content="Attach a calculator and run an ASE optimizer.",
+)
+graph.connect(skill.id, procedure.id, relation=EdgeRelation.decomposes_to)
+
+planner_context = graph.plan("relax this crystal")
+execution_context = graph.expand(skill.slug, stages=["decomposition"])
+
+graph.memory("run-42").add(
+    "FIRE converged at fmax=0.03.",
+    tags=["success"],
+    success=True,
+)
+graph.close()
+```
+
+The main methods are `add`, `get`, `list`, `search`, `update`, `delete`,
+`connect`, `related`, `plan`, `heuristics`, `constraints`, `expand`, and
+`memory`. IDs, slugs, and aliases are accepted anywhere an entry identifier is
+required. Each client owns its database engine, so multiple graph databases can
+be used safely in the same process.
+
+### Python chat API
+
+Configure an OpenAI or OpenAI-compatible provider:
+
+```bash
+export OPENAI_API_KEY="..."
+export OPENAI_API_BASE="https://your-provider.example/v1"  # optional
+export GRAPH_AGENT_MODEL="qwen-plus"                       # optional
+```
+
+Create a stateful, read-only conversation for question answering:
+
+```python
+from know_do_graph import KnowDoGraph
+
+graph = KnowDoGraph("data/my_agent.db")
+chat = graph.chat(read_only=True, model="qwen-plus")
+
+print(chat.send("Which skills can construct a material interface?"))
+print(chat.send("What constraints apply to the best candidate?"))
+
+chat.reset()
+graph.close()
+```
+
+Allow the agent to add, update, link, and retrieve graph knowledge:
+
+```python
+def on_step(event: str, data: dict) -> None:
+    if event in {"tool_call", "tool_result"}:
+        print(event, data)
+
+with KnowDoGraph("data/my_agent.db") as graph:
+    chat = graph.chat(model="qwen-plus", on_step=on_step)
+    reply = chat.send(
+        "Add a reusable capability for validating atomistic relaxations. "
+        "Search for duplicates and connect it to relevant procedures."
+    )
+    print(reply)
+```
+
+Route a broader task through the orchestrator, or run a review batch:
+
+```python
+with KnowDoGraph("data/my_agent.db") as graph:
+    orchestrator = graph.chat(agent="orchestrator", model="qwen-plus")
+    print(orchestrator.send("Improve weak coverage around phonon workflows."))
+
+    reviewer = graph.chat(agent="reviewer", model="qwen-plus", batch_size=3)
+    print(reviewer.review("Focus on duplicate titles and inconsistent tags."))
+```
+
+Credentials may also be passed directly with `api_key=` and `base_url=`.
+Use `graph.ask("...", read_only=True)` for a one-shot conversation.
+For async applications, call `await asyncio.to_thread(chat.send, message)`.
+See `examples/chat_api.py` for complete examples.
+
 ### Install from source
 
 ```bash

@@ -90,6 +90,8 @@ class ReviewAgent:
         model: str | None = None,
         batch_size: int = 5,
         on_step: Callable[[str, dict], None] | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         self._graph = graph
         self._batch_size = batch_size
@@ -99,8 +101,8 @@ class ReviewAgent:
             os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL),
         )
         self._client = OpenAI(
-            api_key=os.environ["OPENAI_API_KEY"],
-            base_url=os.environ.get("OPENAI_API_BASE"),
+            api_key=api_key or os.environ["OPENAI_API_KEY"],
+            base_url=base_url if base_url is not None else os.environ.get("OPENAI_API_BASE"),
         )
 
     # ------------------------------------------------------------------

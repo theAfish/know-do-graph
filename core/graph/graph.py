@@ -116,13 +116,23 @@ class KnowDoGraph:
             for nbr in self._g.successors(entry_id):
                 data = dict(self._g.edges[entry_id, nbr])
                 if _matches(data):
-                    neighbors.append({"id": nbr, "direction": "out", **data})
+                    neighbors.append({
+                        **data,
+                        "edge_id": data.get("id"),
+                        "id": nbr,
+                        "direction": "out",
+                    })
 
         if direction in ("in", "both"):
             for nbr in self._g.predecessors(entry_id):
                 data = dict(self._g.edges[nbr, entry_id])
                 if _matches(data):
-                    neighbors.append({"id": nbr, "direction": "in", **data})
+                    neighbors.append({
+                        **data,
+                        "edge_id": data.get("id"),
+                        "id": nbr,
+                        "direction": "in",
+                    })
 
         return neighbors
 

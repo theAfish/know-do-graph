@@ -1,10 +1,13 @@
 import os
 import shutil
+from contextlib import contextmanager
+from contextvars import ContextVar
 from importlib import resources
 from pathlib import Path
-from typing import Generator
+from typing import Callable, Generator, Iterator
 
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 
@@ -15,31 +18,55 @@ def _database_path() -> Path:
     return (Path.cwd() / "data" / "know_do_graph.db").resolve()
 
 
-DB_PATH = _database_path()
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+def create_database_engine(path: str | Path) -> Engine:
+    """Create a SQLite engine for a Know-Do Graph database."""
+    db_path = Path(path).expanduser().resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
 
-engine = create_engine(
-    f"sqlite:///{DB_PATH}",
-    connect_args={"check_same_thread": False},
+    # Optional dependency: retrieval falls back to keyword search when unavailable.
+    try:
+        import sqlite_vec  # type: ignore
+
+        @event.listens_for(db_engine, "connect")
+        def _load_sqlite_vec(dbapi_conn, _connection_record) -> None:
+            try:
+                dbapi_conn.enable_load_extension(True)
+                sqlite_vec.load(dbapi_conn)
+                dbapi_conn.enable_load_extension(False)
+            except Exception:
+                pass
+    except ImportError:
+        pass
+    return db_engine
+
+
+DB_PATH = _database_path()
+engine = create_database_engine(DB_PATH)
+
+_default_session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_session_factory: ContextVar[Callable[[], Session]] = ContextVar(
+    "kdg_session_factory",
+    default=_default_session_factory,
 )
 
-# Try to load sqlite-vec on every new SQLite connection so vector search works.
-# Optional dep: if sqlite-vec isn't installed, retrieval falls back to keyword-only.
-try:
-    import sqlite_vec  # type: ignore
 
-    @event.listens_for(engine, "connect")
-    def _load_sqlite_vec(dbapi_conn, _connection_record) -> None:
-        try:
-            dbapi_conn.enable_load_extension(True)
-            sqlite_vec.load(dbapi_conn)
-            dbapi_conn.enable_load_extension(False)
-        except Exception:
-            pass  # extension loading not supported on this build; vector search disabled
-except ImportError:
-    pass
+def SessionLocal() -> Session:
+    """Create a session using the database bound to the current context."""
+    return _session_factory.get()()
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+@contextmanager
+def bind_session_factory(factory: Callable[[], Session]) -> Iterator[None]:
+    """Temporarily route legacy agent tools to a client-owned database."""
+    token = _session_factory.set(factory)
+    try:
+        yield
+    finally:
+        _session_factory.reset(token)
 
 
 def install_starter_database(*, force: bool = False) -> Path:
@@ -73,13 +100,14 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def init_db() -> None:
+def initialize_database(db_engine: Engine) -> None:
+    """Create and migrate tables on the supplied engine."""
     from core.storage.models import Base
 
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=db_engine)
 
     # Migrate: add new columns idempotently (SQLite only supports ADD COLUMN)
-    with engine.connect() as conn:
+    with db_engine.connect() as conn:
         for col, default in [
             ("aliases", "'[]'"),
             ("scripts_json", "'[]'"),
@@ -102,3 +130,7 @@ def init_db() -> None:
             conn.commit()
         except Exception:
             pass  # sqlite-vec not loaded; hybrid retrieval will fall back to keyword
+
+
+def init_db() -> None:
+    initialize_database(engine)

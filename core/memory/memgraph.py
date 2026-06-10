@@ -51,6 +51,7 @@ be listed, queried, and promoted into full Know-Do Graph entries.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -59,8 +60,11 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-_MEMORY_DIR = Path(__file__).parent.parent.parent / "data" / "memory"
-_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+def _default_memory_dir() -> Path:
+    configured = os.environ.get("KDG_MEMORY_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.cwd() / "data" / "memory").resolve()
 
 
 class MemSourceFormat(str, Enum):
@@ -100,14 +104,26 @@ class MemGraph:
         you want to resume or extend a session across process restarts.
     """
 
-    def __init__(self, session_id: str = "default") -> None:
+    def __init__(
+        self,
+        session_id: str = "default",
+        *,
+        storage_dir: str | Path | None = None,
+    ) -> None:
+        if not session_id or Path(session_id).name != session_id:
+            raise ValueError("session_id must be a non-empty filename-safe name")
         self.session_id = session_id
+        self.storage_dir = (
+            Path(storage_dir).expanduser().resolve()
+            if storage_dir is not None
+            else _default_memory_dir()
+        )
         self._entries: dict[str, MemEntry] = {}
         self._load()
 
     @property
     def _path(self) -> Path:
-        return _MEMORY_DIR / f"{self.session_id}.json"
+        return self.storage_dir / f"{self.session_id}.json"
 
     def _load(self) -> None:
         if self._path.exists():
@@ -115,6 +131,7 @@ class MemGraph:
             self._entries = {k: MemEntry(**v) for k, v in raw.items()}
 
     def _save(self) -> None:
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
         self._path.write_text(
             json.dumps(
                 {k: v.model_dump(mode="json") for k, v in self._entries.items()},
@@ -421,8 +438,13 @@ class MemGraph:
         return True
 
     @staticmethod
-    def list_sessions() -> list[str]:
-        return [p.stem for p in _MEMORY_DIR.glob("*.json")]
+    def list_sessions(storage_dir: str | Path | None = None) -> list[str]:
+        directory = (
+            Path(storage_dir).expanduser().resolve()
+            if storage_dir is not None
+            else _default_memory_dir()
+        )
+        return sorted(p.stem for p in directory.glob("*.json"))
 
 
 # ------------------------------------------------------------------

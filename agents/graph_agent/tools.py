@@ -38,7 +38,7 @@ def _looks_overly_specific(title: str) -> bool:
     return any(p.search(title) for p in _CONCRETE_INSTANCE_PATTERNS)
 
 
-def _check_generalization(title: str, db: Any) -> dict:
+def _check_generalization(title: str, db: Any, graph: Any = None) -> dict:
     """Soft abstraction check.
 
     Returns ``{needs_generalization: bool, similar: [...], suggestion: str}``.
@@ -49,7 +49,7 @@ def _check_generalization(title: str, db: Any) -> dict:
     from core.retrieval.retrieval import RetrievalEngine
     from core import app_state
 
-    engine = RetrievalEngine(db, app_state.graph)
+    engine = RetrievalEngine(db, graph or app_state.graph)
     candidates = engine.search_entries(query=title, limit=5)
     flag = _looks_overly_specific(title) or len(candidates) > 0
     return {
@@ -85,7 +85,7 @@ def create_entry(
     from core.storage.repository import EntryRepository
 
     with SessionLocal() as db:
-        check = _check_generalization(title, db)
+        check = _check_generalization(title, db, graph)
         meta = EntryMetadata(
             source_provenance=source_provenance,
             needs_generalization=check["needs_generalization"],
