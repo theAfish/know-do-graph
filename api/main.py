@@ -22,6 +22,7 @@ from api.routes import remote_sync as remote_sync_routes
 from api.routes import retrieve as retrieve_routes
 from core.app_state import graph
 from core.storage.database import SessionLocal, init_db
+from core.version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ app = FastAPI(
         "Agent-facing interface for a wiki-native executable knowledge graph. "
         "Search entries, traverse relations, and navigate operational knowledge."
     ),
-    version="0.1.0",
+    version=__version__,
     lifespan=lifespan,
 )
 

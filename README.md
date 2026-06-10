@@ -63,6 +63,35 @@ python main.py serve
 > ```
 > Re-run whenever you edit files under `frontend/src/` or `frontend/styles/`.
 
+### Release to PyPI from GitHub
+
+This repository is set up so the Python package version comes from the Git tag
+used for the release. A GitHub release published from tag `v0.1.1` will build
+package version `0.1.1` and publish it to PyPI automatically.
+
+One-time setup:
+
+1. In PyPI, create a trusted publisher for this repository.
+2. In GitHub, make sure Actions are enabled for the repository.
+3. Publish releases from version tags like `v0.1.1`, `v0.2.0`, and so on.
+
+Release flow:
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+Then publish a GitHub release for that tag. The workflow at
+`.github/workflows/release-pypi.yml` will:
+
+1. build the frontend assets,
+2. build the Python sdist and wheel,
+3. publish the package to PyPI using GitHub's OIDC trusted publishing.
+
+If you want to test the PyPI connection first, point the same workflow at
+TestPyPI before using the production publisher.
+
 ### Frontend development (hot-reload)
 
 ```bash
