@@ -238,8 +238,13 @@ class KnowDoGraph:
             )
 
     def memory(self, session_id: str = "default") -> MemGraph:
-        """Return session-scoped episodic memory stored beside this database."""
-        return MemGraph(session_id, storage_dir=self.memory_dir)
+        """Return a session-scoped view of memory nodes in this graph."""
+        return MemGraph(
+            session_id,
+            storage_dir=self.memory_dir,
+            session_factory=self._session_factory,
+            graph=self._graph,
+        )
 
     def chat(
         self,

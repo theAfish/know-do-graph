@@ -388,7 +388,7 @@ def mem_list(
 def mem_promote(
     mem_id: str = typer.Argument(..., help="Memory trace ID"),
     session: str = typer.Option("default", "--session"),
-    entry_type: str = typer.Option("memory", "--type", "-t"),
+    entry_type: str = typer.Option("generic", "--type", "-t"),
 ) -> None:
     """Promote a Mem-Graph trace into a full Know-Do Graph entry."""
     _init()

@@ -14,6 +14,7 @@ class EdgeRelation(str, Enum):
     related_workflow = "related_workflow"
     generated_from = "generated_from"
     memory_of = "memory_of"
+    related_memory = "related_memory"
     refinement_of = "refinement_of"
     derived_from = "derived_from"
     warning_about = "warning_about"

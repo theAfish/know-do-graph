@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.graph.graph import KnowDoGraph
+from core.schemas.edge import Edge, EdgeRelation
 from core.schemas.entry import Entry, EntryMetadata, EntryType, RefinementStatus
 from core.storage.database import SessionLocal
 from core.storage.repository import EdgeRepository, EntryRepository
@@ -67,10 +68,10 @@ class MaintenanceAgent:
         self,
         mem_id: str,
         session_id: str = "default",
-        entry_type: EntryType = EntryType.memory,
+        entry_type: EntryType = EntryType.generic,
         tags: Optional[list[str]] = None,
     ) -> Optional[Entry]:
-        """Promote a Mem-Graph trace into a full Know-Do Graph entry."""
+        """Distil a raw memory node into a refined graph entry."""
         from core.memory.memgraph import MemGraph
         from core.storage.repository import EntryRepository
 
@@ -93,7 +94,14 @@ class MaintenanceAgent:
 
         with SessionLocal() as db:
             saved = EntryRepository(db).create(entry)
+            edge = EdgeRepository(db).create(Edge(
+                source_id=mem_entry.id,
+                target_id=saved.id,
+                relation=EdgeRelation.refinement_of,
+                metadata={"source": "memory_promotion"},
+            ))
         self._graph.add_entry(saved)
+        self._graph.add_edge(edge)
         mg.mark_promoted(mem_id, saved.id)
         return saved
 

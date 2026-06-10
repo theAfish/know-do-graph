@@ -74,7 +74,13 @@ class PublicApiTests(unittest.TestCase):
         memory = self.graph.memory("agent-run")
         trace = memory.add("The low-strain match succeeded.", success=True)
         self.assertEqual(memory.get(trace.id).content, trace.content)
-        self.assertTrue((self.graph.memory_dir / "agent-run.json").is_file())
+        self.assertEqual(self.graph.get(trace.id).entry_type, EntryType.memory)
+        self.assertFalse((self.graph.memory_dir / "agent-run.json").exists())
+
+        follow_up = memory.add("The result reproduced on a second structure.")
+        edge = memory.connect(trace.id, follow_up.id)
+        self.assertEqual(edge.relation, EdgeRelation.related_memory)
+        self.assertEqual(memory.edges(trace.id)[0].target_id, follow_up.id)
 
     def test_clients_are_isolated_by_database_path(self) -> None:
         other_path = Path(self.temp_dir.name) / "other.db"
