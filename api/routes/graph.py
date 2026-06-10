@@ -68,6 +68,21 @@ def get_full_graph() -> dict:
     }
 
 
+@router.post("/reload")
+def reload_graph() -> dict:
+    """Rebuild the in-memory graph from the DB and broadcast a refresh event.
+
+    Useful after out-of-process writes (CLI extract, db merge, manual sqlite
+    edits) when you don't want to wait for the DB-watcher tick.
+    """
+    from core import events as _events
+    from core.sync.db_watcher import reload_graph_from_db
+
+    nodes, edges = reload_graph_from_db(_graph)
+    _events.emit("graph_changed", {"source": "reload_endpoint", "nodes": nodes, "edges": edges})
+    return {"reloaded": True, "nodes": nodes, "edges": edges}
+
+
 @router.get("/neighbors/{entry_id}")
 def get_neighbors(
     entry_id: str,

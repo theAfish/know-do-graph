@@ -17,6 +17,44 @@ _STOP_WORDS = {
     "a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or", "is", "are", "be",
 }
 
+# Bidirectional synonym groups — each list is a set of interchangeable terms.
+# When any member appears as a query token the others are added automatically.
+_SYNONYM_GROUPS: list[list[str]] = [
+    ["cnt", "nanotube", "carbon-nanotube", "carbon nanotube"],
+    ["cnt", "carbon tube", "tube"],
+    ["filled tube", "filled cnt", "filled nanotube", "confined"],
+    ["ase", "atomic simulation environment"],
+    ["slab", "surface slab", "surface"],
+    ["interface", "heterostructure", "film substrate"],
+    ["supercell", "super cell", "expansion"],
+    ["lattice matching", "zsl", "coherent interface"],
+    ["methane", "ch4"],
+    ["dft", "density functional theory"],
+    ["md", "molecular dynamics"],
+    ["mlip", "mace", "machine learning potential", "interatomic potential"],
+    ["crystal", "bulk crystal", "bulk structure"],
+    ["nanoparticle", "nano particle", "nanostructure"],
+]
+
+# Build a fast lookup: token → set of synonym tokens (excluding itself)
+_SYNONYM_MAP: dict[str, set[str]] = {}
+for _group in _SYNONYM_GROUPS:
+    for _term in _group:
+        others = {t for t in _group if t != _term}
+        _SYNONYM_MAP.setdefault(_term, set()).update(others)
+
+
+def _expand_tokens(tokens: list[str]) -> list[str]:
+    """Return *tokens* plus any synonyms, deduped, preserving order."""
+    seen: set[str] = set(tokens)
+    expanded = list(tokens)
+    for tok in tokens:
+        for syn in _SYNONYM_MAP.get(tok, ()):
+            if syn not in seen:
+                seen.add(syn)
+                expanded.append(syn)
+    return expanded
+
 
 class RetrievalEngine:
     """Search and graph-traversal interface over the persisted graph."""
@@ -208,6 +246,9 @@ class RetrievalEngine:
         ]
         if not tokens:
             tokens = [query.lower()]
+
+        # Expand tokens with domain synonyms so e.g. "CNT" also finds "nanotube"
+        tokens = _expand_tokens(tokens)
 
         token_filters = []
         for token in tokens:

@@ -18,5 +18,19 @@ export const api = {
   },
   scriptDownloadUrl: (entryId, filename) =>
     `${API_BASE}/entries/${entryId}/scripts/${encodeURIComponent(filename)}`,
+  assetUrl: (entryId, folder, filename) =>
+    `${API_BASE}/entries/${entryId}/assets/${encodeURIComponent(folder)}/${filename
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/')}`,
+  listAssets: (entryId) => jget(`/entries/${entryId}/assets`),
+  syncRemote: async (entryId, { force = true } = {}) => {
+    const r = await fetch(
+      `${API_BASE}/remote-sync/${encodeURIComponent(entryId)}?force=${force ? 'true' : 'false'}`,
+      { method: 'POST' },
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+    return r.json();
+  },
   eventsUrl: () => `${API_BASE}/graph/events`,
 };

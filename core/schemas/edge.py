@@ -28,6 +28,12 @@ class EdgeRelation(str, Enum):
     implements = "implements"
     uses = "uses"
     documents = "documents"
+    # Hierarchical-memory edges (progressive disclosure).
+    # Direction convention is always *from child detail → parent skill*,
+    # so that traversal "out of" a planner-level node yields its details.
+    decomposes_to = "decomposes_to"   # L1 → L2  (capability decomposed into procedure)
+    heuristic_for = "heuristic_for"   # L3 → L1/L2  (heuristic attached to a skill)
+    constraint_on = "constraint_on"   # L4 → L1/L2  (failure-mode attached to a skill)
 
 
 class Edge(BaseModel):

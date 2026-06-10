@@ -19,6 +19,7 @@ Usage
 from __future__ import annotations
 
 import typer
+from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
@@ -43,15 +44,53 @@ def _init() -> None:
     init_db()
 
 
+@app.command("init")
+def initialize(
+    starter: bool = typer.Option(
+        False,
+        "--starter",
+        help="Initialize from the packaged starter database instead of an empty database.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite an existing database. Only valid with --starter.",
+    ),
+) -> None:
+    """Initialize the configured working database."""
+    from core.storage.database import DB_PATH, init_db, install_starter_database
+
+    if force and not starter:
+        raise typer.BadParameter("--force can only be used with --starter")
+
+    if starter:
+        try:
+            install_starter_database(force=force)
+        except FileExistsError:
+            console.print(
+                f"[yellow]Database already exists:[/yellow] {DB_PATH}\n"
+                "Use [cyan]--force[/cyan] to replace it with the starter database."
+            )
+            raise typer.Exit(1)
+        except FileNotFoundError as exc:
+            console.print(f"[red]Starter database unavailable:[/red] {exc}")
+            raise typer.Exit(1)
+        console.print(f"[green]Starter database installed:[/green] {DB_PATH}")
+        return
+
+    existed = DB_PATH.exists()
+    init_db()
+    if existed:
+        console.print(f"[yellow]Database already exists:[/yellow] {DB_PATH}")
+    else:
+        console.print(f"[green]Empty database created:[/green] {DB_PATH}")
+
+
 def _rebuild_graph() -> None:
     from core import app_state
-    from core.storage.database import SessionLocal
-    from core.storage.repository import EdgeRepository, EntryRepository
+    from core.sync.db_watcher import reload_graph_from_db
 
-    with SessionLocal() as db:
-        entries = EntryRepository(db).get_all()
-        edges = EdgeRepository(db).get_all()
-    app_state.graph.rebuild_from_db(entries, edges)
+    reload_graph_from_db(app_state.graph)
 
 
 # ===========================================================================
@@ -759,6 +798,115 @@ def embeddings_backfill(
             f"[green]Embedded {done} entries.[/green] "
             f"Vector index now holds {index_count if index_count is not None else '?'} rows."
         )
+
+
+# ===========================================================================
+# db (merge / dedup across multiple SQLite snapshots)
+# ===========================================================================
+
+db_app = typer.Typer(help="Cross-environment DB maintenance (merge, dedup)", no_args_is_help=True)
+app.add_typer(db_app, name="db")
+
+
+@db_app.command("merge")
+def db_merge(
+    other: Path = typer.Argument(..., help="Path to the other SQLite DB to merge into this one"),
+    prefer: str = typer.Option(
+        "newer", "--prefer",
+        help="Conflict policy on id collision: newer | local | remote",
+    ),
+    no_resolve: bool = typer.Option(False, "--no-resolve", help="Skip wikilink re-resolution"),
+    notify: bool = typer.Option(
+        False, "--notify",
+        help="POST /graph/reload to a running server after merge (KDG_API_URL or --api-url)",
+    ),
+    api_url: str = typer.Option(
+        None, "--api-url", help="Base URL of the running API (default: $KDG_API_URL)",
+    ),
+) -> None:
+    """Additively merge entries+edges from another know-do-graph SQLite file.
+
+    UUID ids make union safe; slug collisions are auto-suffixed by the writer.
+    Run [bold]python main.py db dedup[/bold] afterwards to consolidate duplicates.
+    """
+    _init()
+    from core.sync.db_merge import merge_database
+
+    report = merge_database(other, prefer=prefer, resolve_wikilinks=not no_resolve)
+
+    console.print(f"\n[bold green]Merge complete[/bold green] (from [cyan]{other}[/cyan])")
+    console.print(f"  entries  inserted={report.entries_inserted}  updated={report.entries_updated}  skipped={report.entries_skipped}")
+    console.print(f"  edges    inserted={report.edges_inserted}    skipped={report.edges_skipped}")
+    console.print(f"  wikilinks_resolved={report.wikilinks_resolved}")
+    if report.slug_renames:
+        console.print(f"  [yellow]slug renames ({len(report.slug_renames)}):[/yellow]")
+        for old, new in report.slug_renames[:10]:
+            console.print(f"    {old} \u2192 {new}")
+        if len(report.slug_renames) > 10:
+            console.print(f"    \u2026 and {len(report.slug_renames) - 10} more")
+
+    if notify:
+        import os, httpx
+        url = (api_url or os.environ.get("KDG_API_URL") or "http://127.0.0.1:8000").rstrip("/")
+        try:
+            r = httpx.post(f"{url}/graph/reload", timeout=10.0)
+            r.raise_for_status()
+            console.print(f"  [dim]reloaded running server at {url}: {r.json()}[/dim]")
+        except Exception as exc:
+            console.print(f"  [red]server reload failed:[/red] {exc}")
+
+
+@db_app.command("dedup")
+def db_dedup(
+    apply: bool = typer.Option(False, "--apply", help="Actually merge (default: dry-run report)"),
+    similar: float = typer.Option(
+        0.0, "--similar",
+        help="Also list embedding-similar pairs with cosine \u2265 THRESHOLD (e.g. 0.92). "
+             "Similar pairs are reported only \u2014 review before merging.",
+    ),
+) -> None:
+    """Consolidate exact-duplicate entries; report near-duplicates by embedding similarity."""
+    _init()
+    from core.sync.db_merge import dedup_exact, find_similar_groups
+
+    report = dedup_exact(dry_run=not apply)
+    mode = "APPLIED" if apply else "DRY-RUN"
+    console.print(f"\n[bold]{mode} exact dedup:[/bold] {report.exact_groups} duplicate groups, {len(report.candidates)} pairs")
+    for c in report.candidates[:20]:
+        marker = "[green]merged[/green]" if apply else "[yellow]would merge[/yellow]"
+        console.print(f"  {marker}  {c['duplicate_slug']} \u2192 {c['primary_slug']}  ({c['reason']})")
+    if len(report.candidates) > 20:
+        console.print(f"  \u2026 and {len(report.candidates) - 20} more")
+    if apply:
+        console.print(f"  [bold green]merged_pairs={report.merged_pairs}[/bold green]")
+
+    if similar > 0:
+        sims = find_similar_groups(threshold=similar)
+        console.print(f"\n[bold]Near-duplicate candidates[/bold] (cosine \u2265 {similar}): {len(sims)} pairs")
+        for s in sims[:30]:
+            console.print(f"  sim={s['similarity']:.3f}  {s['a_id'][:8]}\u2026  \u2194  {s['b_id'][:8]}\u2026")
+        if len(sims) > 30:
+            console.print(f"  \u2026 and {len(sims) - 30} more")
+        console.print(
+            "[dim]Review and merge with[/dim] "
+            "[cyan]python main.py agent run \"merge_entries(primary_id=\u2026, duplicate_id=\u2026)\"[/cyan]"
+        )
+
+
+@db_app.command("reload")
+def db_reload(
+    api_url: str = typer.Option(None, "--api-url", help="Default: $KDG_API_URL or http://127.0.0.1:8000"),
+) -> None:
+    """Tell a running API server to rebuild its in-memory graph from the DB."""
+    import os, httpx
+    url = (api_url or os.environ.get("KDG_API_URL") or "http://127.0.0.1:8000").rstrip("/")
+    try:
+        r = httpx.post(f"{url}/graph/reload", timeout=10.0)
+        r.raise_for_status()
+        console.print(f"[green]reloaded:[/green] {r.json()}")
+    except Exception as exc:
+        console.print(f"[red]reload failed:[/red] {exc}")
+        raise typer.Exit(1)
 
 
 # ===========================================================================

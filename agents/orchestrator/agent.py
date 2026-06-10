@@ -70,13 +70,19 @@ class OrchestratorAgent:
         graph: KnowDoGraph,
         model: str | None = None,
         on_step: Callable[[str, dict], None] | None = None,
+        read_only: bool = False,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         self._graph = graph
         self._model = model or os.environ.get("ORCHESTRATOR_MODEL", os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL))
         self._on_step = on_step
+        self._read_only = read_only
+        self._api_key = api_key
+        self._base_url = base_url
         self._client = OpenAI(
-            api_key=os.environ["OPENAI_API_KEY"],
-            base_url=os.environ.get("OPENAI_API_BASE"),
+            api_key=api_key or os.environ["OPENAI_API_KEY"],
+            base_url=base_url if base_url is not None else os.environ.get("OPENAI_API_BASE"),
         )
         self._history: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
 
@@ -120,7 +126,9 @@ class OrchestratorAgent:
                     },
                 },
             },
-            {
+        ]
+        if not self._read_only:
+            tools.append({
                 "type": "function",
                 "function": {
                     "name": "run_review_agent",
@@ -144,8 +152,7 @@ class OrchestratorAgent:
                         },
                     },
                 },
-            },
-        ]
+            })
 
         MAX_ITERATIONS = 8
         for i in range(MAX_ITERATIONS):
@@ -191,6 +198,8 @@ class OrchestratorAgent:
         if name == "run_graph_agent":
             return self._run_graph_agent(kwargs.get("message", ""))
         if name == "run_review_agent":
+            if self._read_only:
+                return "Review agent is not available in read-only mode."
             return self._run_review_agent(
                 kwargs.get("instructions", ""),
                 int(kwargs.get("batch_size", 5)),
@@ -200,7 +209,14 @@ class OrchestratorAgent:
     def _run_graph_agent(self, message: str) -> str:
         from agents.graph_agent.agent import GraphAgent
 
-        agent = GraphAgent(graph=self._graph, model=self._model, on_step=self._on_step)
+        agent = GraphAgent(
+            graph=self._graph,
+            model=self._model,
+            on_step=self._on_step,
+            read_only=self._read_only,
+            api_key=self._api_key,
+            base_url=self._base_url,
+        )
         return agent.chat(message)
 
     def _run_review_agent(self, instructions: str, batch_size: int) -> str:
@@ -211,5 +227,7 @@ class OrchestratorAgent:
             model=self._model,
             batch_size=batch_size,
             on_step=self._on_step,
+            api_key=self._api_key,
+            base_url=self._base_url,
         )
         return agent.run_review(instructions=instructions)

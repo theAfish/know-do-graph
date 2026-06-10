@@ -9,6 +9,131 @@ The graph emerges naturally from `[[wikilink]]` references between entries.
 
 ## Quick start
 
+### Install from PyPI
+
+```bash
+pip install know-do-graph
+
+# Create an empty ./data/know_do_graph.db
+know-do-graph init
+
+# Or start from the database bundled with the package
+know-do-graph init --starter
+
+know-do-graph serve
+```
+
+The starter database is copied into the working location; the installed package
+is never used as the writable database. Existing databases are not replaced
+unless `--force` is explicitly provided.
+
+To choose another database path, set `KDG_DB_PATH` in the environment or in a
+`.env` file in the directory where the command is run:
+
+```bash
+KDG_DB_PATH=./my-data/my-memory.db
+```
+
+Relative `KDG_DB_PATH` values are resolved from the current working directory.
+
+### Python API
+
+Use the high-level client to embed the graph directly in an agent process:
+
+```python
+from know_do_graph import EdgeRelation, EntryType, KnowDoGraph
+
+graph = KnowDoGraph("data/my_agent.db")
+
+skill = graph.add(
+    "Relax an atomic structure",
+    entry_type=EntryType.capability,
+    content="Choose a calculator, then run [[ASE Relaxation]].",
+    tags=["atomistic"],
+)
+procedure = graph.add(
+    "ASE Relaxation",
+    entry_type=EntryType.procedure,
+    content="Attach a calculator and run an ASE optimizer.",
+)
+graph.connect(skill.id, procedure.id, relation=EdgeRelation.decomposes_to)
+
+planner_context = graph.plan("relax this crystal")
+execution_context = graph.expand(skill.slug, stages=["decomposition"])
+
+graph.memory("run-42").add(
+    "FIRE converged at fmax=0.03.",
+    tags=["success"],
+    success=True,
+)
+graph.close()
+```
+
+The main methods are `add`, `get`, `list`, `search`, `update`, `delete`,
+`connect`, `related`, `plan`, `heuristics`, `constraints`, `expand`, and
+`memory`. IDs, slugs, and aliases are accepted anywhere an entry identifier is
+required. Each client owns its database engine, so multiple graph databases can
+be used safely in the same process.
+
+### Python chat API
+
+Configure an OpenAI or OpenAI-compatible provider:
+
+```bash
+export OPENAI_API_KEY="..."
+export OPENAI_API_BASE="https://your-provider.example/v1"  # optional
+export GRAPH_AGENT_MODEL="qwen-plus"                       # optional
+```
+
+Create a stateful, read-only conversation for question answering:
+
+```python
+from know_do_graph import KnowDoGraph
+
+graph = KnowDoGraph("data/my_agent.db")
+chat = graph.chat(read_only=True, model="qwen-plus")
+
+print(chat.send("Which skills can construct a material interface?"))
+print(chat.send("What constraints apply to the best candidate?"))
+
+chat.reset()
+graph.close()
+```
+
+Allow the agent to add, update, link, and retrieve graph knowledge:
+
+```python
+def on_step(event: str, data: dict) -> None:
+    if event in {"tool_call", "tool_result"}:
+        print(event, data)
+
+with KnowDoGraph("data/my_agent.db") as graph:
+    chat = graph.chat(model="qwen-plus", on_step=on_step)
+    reply = chat.send(
+        "Add a reusable capability for validating atomistic relaxations. "
+        "Search for duplicates and connect it to relevant procedures."
+    )
+    print(reply)
+```
+
+Route a broader task through the orchestrator, or run a review batch:
+
+```python
+with KnowDoGraph("data/my_agent.db") as graph:
+    orchestrator = graph.chat(agent="orchestrator", model="qwen-plus")
+    print(orchestrator.send("Improve weak coverage around phonon workflows."))
+
+    reviewer = graph.chat(agent="reviewer", model="qwen-plus", batch_size=3)
+    print(reviewer.review("Focus on duplicate titles and inconsistent tags."))
+```
+
+Credentials may also be passed directly with `api_key=` and `base_url=`.
+Use `graph.ask("...", read_only=True)` for a one-shot conversation.
+For async applications, call `await asyncio.to_thread(chat.send, message)`.
+See `examples/chat_api.py` for complete examples.
+
+### Install from source
+
 ```bash
 # 1. Create and activate a virtual environment
 python -m venv .venv
@@ -34,6 +159,35 @@ python main.py serve
 > ```
 > Re-run whenever you edit files under `frontend/src/` or `frontend/styles/`.
 
+### Release to PyPI from GitHub
+
+This repository is set up so the Python package version comes from the Git tag
+used for the release. A GitHub release published from tag `v0.1.1` will build
+package version `0.1.1` and publish it to PyPI automatically.
+
+One-time setup:
+
+1. In PyPI, create a trusted publisher for this repository.
+2. In GitHub, make sure Actions are enabled for the repository.
+3. Publish releases from version tags like `v0.1.1`, `v0.2.0`, and so on.
+
+Release flow:
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+Then publish a GitHub release for that tag. The workflow at
+`.github/workflows/release-pypi.yml` will:
+
+1. build the frontend assets,
+2. build the Python sdist and wheel,
+3. publish the package to PyPI using GitHub's OIDC trusted publishing.
+
+If you want to test the PyPI connection first, point the same workflow at
+TestPyPI before using the production publisher.
+
 ### Frontend development (hot-reload)
 
 ```bash
@@ -49,7 +203,21 @@ cd frontend && npm run dev
 
 ## CLI reference
 
-All commands are available via `python main.py`.
+Commands are available via `know-do-graph` after a package installation or
+`python main.py` from a source checkout.
+
+### Database initialization
+
+```bash
+# Create an empty database if one does not exist
+know-do-graph init
+
+# Copy the bundled starter database
+know-do-graph init --starter
+
+# Explicitly replace an existing database with the starter
+know-do-graph init --starter --force
+```
 
 ### Entry management
 
@@ -187,6 +355,52 @@ Interactive docs at `http://127.0.0.1:8000/docs` once the server is running.
 | `DELETE` | `/mem/{session}/{mem_id}` | Delete a trace |
 | `POST` | `/mem/{session}/{mem_id}/promote` | Promote trace → KDG entry |
 
+### Progressive retrieval (hierarchical memory)
+
+The graph is organised into four orthogonal **skill levels** so planning
+context stays small and operational details are pulled on demand.
+
+| Level | Stored as | Purpose |
+|-------|-----------|---------|
+| **L1 — Capability** | `entry_type` ∈ {`capability`, `workflow`} | Reusable high-level abilities (planner-facing) |
+| **L2 — Procedure**  | `entry_type` = `procedure` | Executable workflow decomposition |
+| **L3 — Heuristic**  | `entry_type` = `heuristic` | Empirical, conditional guidance (cooling rate ⇒ sp2/sp3 ratio, …) |
+| **L4 — Constraint** | `entry_type` = `constraint` | Known failure modes / instability regions |
+
+`EntryMetadata.skill_level` may override the level explicitly. New typed edges
+wire the layers together:
+
+- `decomposes_to` (L1 → L2)
+- `heuristic_for` (L3 → L1/L2)
+- `constraint_on` (L4 → L1/L2)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/retrieve/plan?goal=…&k=5&include_l2=true` | L1 (+ L2) candidates for a goal — planner context |
+| `GET` | `/retrieve/heuristics?skill=<id\|slug>&k=5` | L3 heuristics attached to a skill (fallback: semantic) |
+| `GET` | `/retrieve/constraints?skill=<id\|slug>&k=5` | L4 constraints / failure modes (fallback: semantic) |
+| `GET` | `/retrieve/expand/{skill}?stages=heuristics,constraints,decomposition` | Bundle used by verifier / debugging loops |
+
+Recommended flow::
+
+    goal → /retrieve/plan
+         → pick skill, execute
+         → on verifier feedback or uncertainty
+         → /retrieve/heuristics  +  /retrieve/constraints
+         → refinement / debugging
+
+GraphAgent exposes the same staging as tools (`retrieve_plan`,
+`retrieve_heuristics`, `retrieve_constraints`) plus `create_heuristic`,
+`create_constraint`, and `decompose_capability` so it can grow the L3/L4
+layer instead of dumping operational knowledge into capability content.
+
+To migrate an existing graph:
+
+```bash
+python scripts/backfill_skill_levels.py --dry-run   # preview
+python scripts/backfill_skill_levels.py             # apply
+```
+
 ---
 
 ## Node verification & self-evolution
@@ -248,7 +462,7 @@ curl http://<host>:<port>/remote
 |--------|------|-------------|
 | `GET` | `/` | Instruction sheet (plain text) |
 | `GET` | `/remote` | Same instruction sheet |
-| `POST` | `/remote/chat` | Chat with the orchestrator agent |
+| `POST` | `/remote/chat` | Chat with the orchestrator agent (read-only; agents and humans) |
 | `GET` | `/remote/search` | Search entries (`?q=&tags=&entry_type=&limit=`) |
 | `GET` | `/remote/graph` | Graph stats + full node/edge dump |
 | `GET` | `/remote/entry/{id}` | Entry by ID, slug, or alias |
@@ -256,6 +470,9 @@ curl http://<host>:<port>/remote
 | `POST` | `/remote/feedback` | Free-form feedback trace; optionally also updates an entry's verification (pass `entry_id` + `verdict`) |
 | `POST` | `/entries/{id}/feedback` | Direct per-entry verification feedback |
 | `DELETE` | `/remote/session/{id}` | Clear a session's chat history |
+| `POST` | `/remote/submit` | Deposit raw knowledge into the inbox (agents and humans) |
+| `GET` | `/remote/inbox` | List pending inbox submissions awaiting distillation (humans) |
+| `POST` | `/remote/distill` | Run graph agent to convert inbox into proper nodes (humans) |
 
 ### Chat (one-shot)
 
@@ -344,6 +561,76 @@ The `MaintenanceAgent` exposes `list_unverified()`, `list_bugged()`, and
 `list_needs_generalization()` so it can sweep for entries needing attention.
 
 Promote feedback traces to entries via `POST /mem/{session_id}/{mem_id}/promote`.
+
+### Knowledge inbox (submit → review → distill)
+
+External agents — and humans — can deposit raw knowledge into an **inbox** for
+later review and distillation into proper graph nodes.  Nothing touches the
+graph until you explicitly trigger distillation, so you stay in control of what
+gets added.
+
+**Step 1 — Submit** (agents or humans)
+
+```bash
+# Plain-text summary or context dump
+curl -X POST http://<host>:<port>/remote/submit \
+     -H "Content-Type: application/json" \
+     -d '{
+       "title": "MACE geometry optimisation walkthrough",
+       "content": "We used MACE-MP-0 to relax a bulk Fe structure ...",
+       "tags": ["mace", "relaxation"],
+       "agent_id": "matcreator-01"
+     }'
+
+# OpenAI-style conversation transcript
+curl -X POST http://<host>:<port>/remote/submit \
+     -H "Content-Type: application/json" \
+     -d '{
+       "title": "ASE relaxation session",
+       "format": "openai",
+       "messages": [
+         {"role": "user",      "content": "How do I relax a structure with ASE?"},
+         {"role": "assistant", "content": "Use BFGS with an Atoms object ..."}
+       ],
+       "agent_id": "matcreator-01"
+     }'
+```
+
+The submission is stored as a memory trace tagged `pending-distillation` and
+returns the entry `id` for reference.
+
+**Step 2 — Review the inbox** (humans)
+
+```bash
+curl http://<host>:<port>/remote/inbox
+# → list of pending submissions with a 300-char preview each
+
+# Scope to a specific agent's session
+curl "http://<host>:<port>/remote/inbox?session_id=matcreator-01"
+```
+
+**Step 3 — Distill** (humans, when ready)
+
+```bash
+# Process all pending submissions and create graph nodes
+curl -X POST http://<host>:<port>/remote/distill \
+     -H "Content-Type: application/json" \
+     -d '{}'
+
+# Preview what the agent would receive without touching the graph
+curl -X POST http://<host>:<port>/remote/distill \
+     -H "Content-Type: application/json" \
+     -d '{"dry_run": true}'
+
+# Distil only one agent's submissions
+curl -X POST http://<host>:<port>/remote/distill \
+     -H "Content-Type: application/json" \
+     -d '{"session_id": "matcreator-01"}'
+```
+
+The graph agent reads every pending submission, extracts reusable
+capabilities/procedures/tools (following the abstraction rules), and marks the
+inbox entries as promoted so they are not processed again.
 
 ### Starting the server for remote access
 
@@ -499,7 +786,7 @@ api/
     remote.py         Remote agent access + instruction sheet endpoints
 
 data/
-  know_do_graph.db    SQLite database (auto-created)
+  know_do_graph.db    Default working SQLite database
   memory/             Per-session JSON memory files
   nodes/              YAML entry exports (via `graph export`)
 
@@ -537,7 +824,22 @@ raw mem trace  →  linked note  →  refined capability entry  →  validated k
 
 ## Development notes
 
-- The SQLite database is at `data/know_do_graph.db` and is created automatically on first run.
+- The default SQLite database is `./data/know_do_graph.db`, relative to the
+  directory where the process is started.
+- Set `KDG_DB_PATH` to configure a different filename or path.
+- `init` creates an empty database; `init --starter` copies the bundled starter
+  database to the working path.
+- To package the current development database as the next starter, stop the API
+  server and run:
+
+  ```bash
+  ./scripts/build_starter.sh
+  ```
+
+  The script checkpoints `data/know_do_graph.db`, copies it to the tracked
+  release snapshot at `assets/starter.db`, builds the source distribution and
+  wheel into `dist/`, and verifies that the wheel contains the complete starter
+  database. The live database under `data/` is ignored by Git.
 - The in-memory networkx graph is rebuilt from the database on every server startup (or via `MaintenanceAgent.rebuild_graph()`).
 - All timestamps are UTC.
 - Vector indexing and heavyweight graph databases are intentionally deferred — the architecture supports adding them later without structural changes.

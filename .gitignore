@@ -1,4 +1,12 @@
 .env
 .venv/
+dist/
 __pycache__/
 *.pyc
+data/*.db
+*.db-shm
+*.db-wal
+
+.debug
+.agents
+.codex

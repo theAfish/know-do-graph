@@ -5,7 +5,7 @@ export const state = {
   allEdges: [],
   selectedId: null,
   showLabels: true,
-  scoreMode: false,
+  colorMode: 'type',
   apiMatchIds: null, // Set<string> | null — IDs that matched the API content search
   searchScores: {}, // entry_id → normalized relevance (0..1)
 };
@@ -37,7 +37,8 @@ export const EVENTS = {
   NODE_SELECTED: 'node:selected',
   NODE_CLEARED: 'node:cleared',
   FILTERS_CHANGED: 'filters:changed',
-  SCORE_MODE_CHANGED: 'scoreMode:changed',
+  SCORE_MODE_CHANGED: 'scoreMode:changed', // alias of COLOR_MODE_CHANGED, kept for compat
+  COLOR_MODE_CHANGED: 'colorMode:changed',
   LABELS_CHANGED: 'labels:changed',
   SSE_STATUS: 'sse:status',
 };

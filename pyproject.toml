@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "know-do-graph"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A wiki-native, agent-oriented infrastructure for executable knowledge, operational memory, and capability discovery."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,8 +34,23 @@ embeddings = [
 [project.scripts]
 know-do-graph = "main:app"
 
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "core/_version.py"
+
 [tool.hatch.build.targets.wheel]
-packages = ["agents", "api", "core", "examples"]
+packages = ["agents", "api", "core", "examples", "know_do_graph"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"main.py" = "main.py"
+"assets/starter.db" = "core/resources/starter.db"
+"frontend/dist" = "frontend/dist"
+
+[tool.hatch.build.targets.sdist.force-include]
+"assets/starter.db" = "assets/starter.db"
+"frontend/dist" = "frontend/dist"
 
 [tool.ruff]
 line-length = 100
