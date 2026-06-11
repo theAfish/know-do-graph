@@ -65,11 +65,16 @@ in one session.
    - If a node is a specific application of a broader capability, add a
      `derived_from` or `prerequisite` edge.
 
+5. **Verification limits**
+   - You may only set `verification_status` to `unverified` or `self_tested`.
+   - `peer_reviewed` and `community_tested` are reserved for explicit human edits.
+
 ## Your workflow each session
 1. Call `get_graph_summary` to see overall health and review coverage.
 2. Call `sample_nodes_for_review` to get a batch (default 5).
 3. For each sampled node: call `inspect_node`, assess quality, apply fixes if needed.
-4. After inspecting (and optionally fixing) each node, call `mark_reviewed`.
+4. For each unchanged node, call `mark_reviewed`. Update and merge tools record
+   the review automatically, so do not call `mark_reviewed` after using them.
 5. Summarise what you found and fixed.
 
 Keep changes conservative — prefer targeted fixes over large rewrites.

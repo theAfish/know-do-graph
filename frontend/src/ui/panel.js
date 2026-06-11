@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { ENTRY_TYPES } from '../constants.js';
+import { ENTRY_TYPES, VERIFICATION_COLORS } from '../constants.js';
 import { escAttr, escHtml } from '../utils.js';
 import { state, on, emit, EVENTS } from '../state.js';
 import { highlightNode, clearHighlight, panZoomToNode } from '../graph/render.js';
@@ -103,6 +103,7 @@ function renderDetailHtml(entry, nodeId) {
     kv('Source provenance', md.source_provenance),
     kv('Extraction method', md.extraction_method),
     kv('Verification', md.verification_status),
+    kv('Reviewed times', md.review_count ?? 0),
   ].filter(Boolean);
   if (mdRows.length) html += section('Metadata', mdRows);
 
@@ -191,6 +192,10 @@ function renderEditForm(entry) {
     (type) =>
       `<option value="${escAttr(type)}"${type === entry.entry_type ? ' selected' : ''}>${escHtml(type)}</option>`
   ).join('');
+  const verificationOptions = Object.keys(VERIFICATION_COLORS).map(
+    (status) =>
+      `<option value="${escAttr(status)}"${status === entry.metadata?.verification_status ? ' selected' : ''}>${escHtml(status)}</option>`
+  ).join('');
 
   document.getElementById('detail-title').textContent = `Edit ${entry.title}`;
   document.getElementById('detail-body').innerHTML = `
@@ -206,6 +211,10 @@ function renderEditForm(entry) {
       <label>
         <span>Type</span>
         <select name="entry_type">${typeOptions}</select>
+      </label>
+      <label>
+        <span>Verification</span>
+        <select name="verification_status">${verificationOptions}</select>
       </label>
       <label>
         <span>Tags <small>comma-separated</small></span>
@@ -249,6 +258,10 @@ async function handleEditSubmit(event) {
     tags: splitList(data.get('tags')),
     aliases: splitList(data.get('aliases')),
     content: String(data.get('content') || ''),
+    metadata: {
+      ...(currentEntry.metadata || {}),
+      verification_status: String(data.get('verification_status') || 'unverified'),
+    },
   };
 
   submitBtn.disabled = true;

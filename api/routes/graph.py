@@ -60,6 +60,7 @@ def get_full_graph() -> dict:
     """Return all nodes and edges in the graph."""
     g = _graph._g
     return {
+        "metadata": dict(g.graph),
         "nodes": [{"id": n, **d} for n, d in g.nodes(data=True)],
         "edges": [
             {"source": u, "target": v, **d}

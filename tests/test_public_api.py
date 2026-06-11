@@ -6,7 +6,13 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
-from know_do_graph import EdgeRelation, EntryType, KnowDoGraph, VerificationStatus
+from know_do_graph import (
+    EdgeRelation,
+    EntryMetadata,
+    EntryType,
+    KnowDoGraph,
+    VerificationStatus,
+)
 
 
 class PublicApiTests(unittest.TestCase):
@@ -88,6 +94,67 @@ class PublicApiTests(unittest.TestCase):
             other.add("Only in other graph")
             self.assertEqual(other.stats()["nodes"], 1)
         self.assertEqual(self.graph.stats()["nodes"], 0)
+
+    def test_review_counts_and_global_unreviewed_metadata(self) -> None:
+        from agents.review_agent.tools import mark_reviewed
+        from core.storage.database import bind_session_factory
+
+        first = self.graph.add(
+            "First review target",
+            metadata=EntryMetadata(review_count=7, modify_count=3),
+        )
+        second = self.graph.add("Second review target")
+
+        self.assertEqual(first.metadata.review_count, 0)
+        self.assertEqual(first.metadata.modify_count, 0)
+        self.assertEqual(self.graph.stats()["unreviewed_nodes"], 2)
+
+        with bind_session_factory(self.graph._session_factory):
+            mark_reviewed(first.id, graph=self.graph._graph)
+            mark_reviewed(first.id, graph=self.graph._graph)
+
+        self.assertEqual(self.graph.get(first.id).metadata.review_count, 2)
+        self.assertEqual(self.graph.stats()["unreviewed_nodes"], 1)
+
+        self.assertTrue(self.graph.delete(second.id))
+        self.assertEqual(self.graph.stats()["unreviewed_nodes"], 0)
+
+    def test_review_agent_status_limits_and_manual_status_api(self) -> None:
+        from agents.review_agent.tools import update_entry
+        from core.storage.database import bind_session_factory
+
+        entry = self.graph.add("Verification target")
+        with bind_session_factory(self.graph._session_factory):
+            rejected = update_entry(
+                entry.id,
+                verification_status="peer_reviewed",
+                graph=self.graph._graph,
+            )
+            accepted = update_entry(
+                entry.id,
+                verification_status="self_tested",
+                graph=self.graph._graph,
+            )
+
+        self.assertIn("error", rejected)
+        self.assertEqual(accepted["verification_status"], "self_tested")
+        reviewed = self.graph.get(entry.id)
+        self.assertEqual(reviewed.metadata.review_count, 1)
+        self.assertEqual(
+            reviewed.metadata.verification_status,
+            VerificationStatus.self_tested,
+        )
+        self.assertEqual(self.graph.stats()["unreviewed_nodes"], 0)
+
+        manually_updated = self.graph.set_verification_status(
+            entry.id,
+            VerificationStatus.community_tested,
+        )
+        self.assertEqual(
+            manually_updated.metadata.verification_status,
+            VerificationStatus.community_tested,
+        )
+        self.assertEqual(manually_updated.metadata.review_count, 1)
 
     def test_chat_tools_are_bound_to_the_client_database(self) -> None:
         self.graph.add("Client-owned entry")
@@ -184,9 +251,13 @@ class PublicApiTests(unittest.TestCase):
         )
         self.assertEqual(deleted["action"], "deleted")
         self.assertIsNone(self.graph.get(noise_trace.id))
-        refreshed_memory = self.graph.memory("matcreator")
-        self.assertTrue(refreshed_memory.get(l1_trace.id).promoted)
-        self.assertTrue(refreshed_memory.get(l3_trace.id).promoted)
+        self.assertTrue(promoted["source_memory_deleted"])
+        self.assertTrue(linked["source_memory_deleted"])
+        self.assertIsNone(self.graph.get(l1_trace.id))
+        self.assertIsNone(self.graph.get(l3_trace.id))
+        self.assertEqual(self.graph.memory("matcreator").list(), [])
+        self.assertIsNone(promoted_entry.metadata.source_provenance)
+        self.assertNotIn("distilled_from_memory", promoted_entry.metadata.custom)
 
     def test_memory_review_returns_structured_progress(self) -> None:
         from agents.review_agent.agent import ReviewAgent
