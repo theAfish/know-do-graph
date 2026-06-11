@@ -66,6 +66,15 @@ class ReviewPolicy:
         object.__setattr__(self, "allowed_actions", frozenset(self.allowed_actions))
 
 
+def is_review_candidate(entry: Any, policy: ReviewPolicy) -> bool:
+    """Return whether an entry should count toward an automatic review."""
+    return (
+        entry.entry_type not in policy.exclude_types
+        and entry.metadata.verification_status not in policy.protected_statuses
+        and entry.metadata.review_count == 0
+    )
+
+
 class AutoReviewScheduler:
     """Threshold scheduler returned by :meth:`KnowDoGraph.auto_review`."""
 
@@ -92,11 +101,23 @@ class AutoReviewScheduler:
         self._running = False
         self._lock = Lock()
 
-    def notify_node_created(self, _entry: Any) -> None:
+    def notify_node_created(self, entry: Any) -> None:
+        if not is_review_candidate(entry, self.policy):
+            return
+        self._add_candidates(1)
+
+    def include_existing(self, entries: Any) -> None:
+        """Count existing eligible entries and schedule a review if needed."""
+        count = sum(is_review_candidate(entry, self.policy) for entry in entries)
+        self._add_candidates(count)
+
+    def _add_candidates(self, count: int) -> None:
+        if count <= 0:
+            return
         with self._lock:
             if not self._active:
                 return
-            self.created_since_review += 1
+            self.created_since_review += count
             if self.created_since_review < self.threshold or self._running:
                 return
             self.created_since_review = 0

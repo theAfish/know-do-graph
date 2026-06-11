@@ -208,6 +208,8 @@ class PublicApiTests(unittest.TestCase):
             )
 
         self.assertNotIn(memory.id, {item["id"] for item in sampled})
+        self.assertNotIn(protected.id, {item["id"] for item in sampled})
+        self.assertIn(ordinary.id, {item["id"] for item in sampled})
         self.assertIn("protected", denied["error"])
         self.assertEqual(assigned["verification_status"], "bugged")
         self.assertIn("not permitted", deletion["error"])
@@ -261,6 +263,75 @@ class PublicApiTests(unittest.TestCase):
         self.assertTrue(thread.call_args.kwargs["daemon"])
         scheduler.stop()
         self.assertNotIn(scheduler, self.graph._auto_reviewers)
+
+    def test_auto_review_counts_only_policy_candidates(self) -> None:
+        from agents.review_agent.tools import mark_reviewed
+        from core.storage.database import bind_session_factory
+
+        policy = ReviewPolicy(
+            exclude_types={EntryType.memory},
+            protected_statuses={VerificationStatus.peer_reviewed},
+        )
+        reviewed = self.graph.add("Already reviewed")
+        with bind_session_factory(self.graph._session_factory):
+            mark_reviewed(reviewed.id, graph=self.graph._graph, policy=policy)
+
+        with patch("know_do_graph.review.Thread") as thread:
+            scheduler = self.graph.auto_review(threshold=1, policy=policy)
+            self.graph.add("Excluded memory", entry_type=EntryType.memory)
+            self.graph.add(
+                "Protected node",
+                metadata=EntryMetadata(
+                    verification_status=VerificationStatus.peer_reviewed
+                ),
+            )
+            scheduler.notify_node_created(self.graph.get(reviewed.id))
+
+            thread.assert_not_called()
+            self.graph.add("Eligible node")
+
+        thread.assert_called_once()
+        scheduler.stop()
+
+    def test_auto_review_can_include_existing_backlog(self) -> None:
+        self.graph.add("Existing candidate one")
+        self.graph.add("Existing candidate two")
+
+        with patch("know_do_graph.review.Thread") as thread:
+            default_scheduler = self.graph.auto_review(threshold=2)
+            thread.assert_not_called()
+            backlog_scheduler = self.graph.auto_review(
+                threshold=2,
+                include_existing=True,
+            )
+
+        thread.assert_called_once()
+        self.assertEqual(backlog_scheduler.created_since_review, 0)
+        default_scheduler.stop()
+        backlog_scheduler.stop()
+
+    def test_auto_review_existing_backlog_respects_policy(self) -> None:
+        self.graph.add("Existing memory", entry_type=EntryType.memory)
+        protected = self.graph.add("Existing protected node")
+        self.graph.set_verification_status(
+            protected.id, VerificationStatus.peer_reviewed
+        )
+        self.graph.add("Existing eligible node")
+        policy = ReviewPolicy(
+            exclude_types={EntryType.memory},
+            protected_statuses={VerificationStatus.peer_reviewed},
+        )
+
+        with patch("know_do_graph.review.Thread") as thread:
+            scheduler = self.graph.auto_review(
+                threshold=2,
+                policy=policy,
+                include_existing=True,
+            )
+
+        thread.assert_not_called()
+        self.assertEqual(scheduler.created_since_review, 1)
+        scheduler.stop()
 
     def test_chat_tools_are_bound_to_the_client_database(self) -> None:
         self.graph.add("Client-owned entry")

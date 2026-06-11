@@ -16,7 +16,7 @@ from core.version import __version__
 
 from .chat import ChatSession
 from .client import KDG, KnowDoGraph
-from .review import AutoReviewScheduler, ReviewPolicy, ReviewStrategy
+from .review import AutoReviewScheduler, ReviewPolicy, ReviewStrategy, is_review_candidate
 
 __all__ = [
     "Edge",
@@ -35,6 +35,7 @@ __all__ = [
     "RefinementStatus",
     "ReviewPolicy",
     "ReviewStrategy",
+    "is_review_candidate",
     "ScriptAttachment",
     "SkillLevel",
     "VerificationStatus",

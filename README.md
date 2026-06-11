@@ -164,6 +164,7 @@ with KnowDoGraph("data/my_agent.db") as graph:
         threshold=20,
         policy=policy,
         strategy="auto",
+        include_existing=True,
         model="qwen-plus",
     )
 ```
@@ -173,9 +174,10 @@ and similar entries. `global` prioritizes under-reviewed, isolated, and highly
 connected nodes using graph statistics. Policy checks run inside every review
 mutation tool; protected nodes may still be linked but cannot be changed,
 deleted, distilled, merged, or have review metadata updated. The automatic
-scheduler counts nodes created through this `KnowDoGraph` client and runs in a
-background thread when the threshold is reached. Call `scheduler.stop()` to
-disable it.
+scheduler counts eligible, unreviewed nodes created through this `KnowDoGraph`
+client and runs in a background thread when the threshold is reached. Set
+`include_existing=True` to count an existing eligible backlog when the
+scheduler is attached. Call `scheduler.stop()` to disable it.
 
 Review raw memory separately and receive structured progress/results:
 

@@ -83,7 +83,12 @@ def sample_nodes_for_review(
         all_entries = engine.list_entries(limit=5000)
 
     policy = _policy_or_default(policy)
-    candidates = [entry for entry in all_entries if entry.entry_type not in policy.exclude_types]
+    candidates = [
+        entry
+        for entry in all_entries
+        if entry.entry_type not in policy.exclude_types
+        and entry.metadata.verification_status not in policy.protected_statuses
+    ]
     if not candidates or batch_size <= 0:
         return []
 
@@ -125,7 +130,11 @@ def sample_nodes_for_review(
                 seed.title, limit=batch_size * 2, mode="hybrid"
             )
         for entry in similar:
-            if entry.entry_type in policy.exclude_types or entry.id in selected_ids:
+            if (
+                entry.entry_type in policy.exclude_types
+                or entry.metadata.verification_status in policy.protected_statuses
+                or entry.id in selected_ids
+            ):
                 continue
             selected.append(entry)
             selected_ids.add(entry.id)
