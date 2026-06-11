@@ -18,6 +18,7 @@ from core.storage.repository import EdgeRepository, EntryRepository
 
 if TYPE_CHECKING:
     from .chat import AgentKind, ChatSession, StatusCallback, StepCallback
+    from .review import ReviewPolicy, ReviewStrategy
 
 
 class KnowDoGraph:
@@ -43,6 +44,7 @@ class KnowDoGraph:
             bind=self._engine,
         )
         self._graph = InMemoryGraph()
+        self._auto_reviewers: list[Any] = []
         if initialize:
             initialize_database(self._engine)
         self.refresh()
@@ -55,6 +57,8 @@ class KnowDoGraph:
 
     def close(self) -> None:
         """Release pooled database connections."""
+        for scheduler in list(self._auto_reviewers):
+            scheduler.stop()
         self._engine.dispose()
 
     def refresh(self) -> dict:
@@ -92,6 +96,8 @@ class KnowDoGraph:
         with self._session() as db:
             saved = EntryRepository(db).create(entry)
         self._graph.add_entry(saved)
+        for scheduler in list(self._auto_reviewers):
+            scheduler.notify_node_created(saved)
         return saved
 
     create_entry = add
@@ -272,6 +278,8 @@ class KnowDoGraph:
         api_key: str | None = None,
         base_url: str | None = None,
         batch_size: int = 5,
+        policy: "ReviewPolicy | None" = None,
+        strategy: "ReviewStrategy" = "auto",
     ) -> "ChatSession":
         """Create a stateful conversation with a built-in graph agent."""
         from .chat import ChatSession
@@ -286,11 +294,34 @@ class KnowDoGraph:
             api_key=api_key,
             base_url=base_url,
             batch_size=batch_size,
+            policy=policy,
+            strategy=strategy,
         )
 
     def ask(self, message: str, **chat_options: Any) -> str:
         """Run a one-shot chat request."""
         return self.chat(**chat_options).send(message)
+
+    def auto_review(
+        self,
+        *,
+        threshold: int = 20,
+        policy: "ReviewPolicy | None" = None,
+        strategy: "ReviewStrategy" = "auto",
+        **chat_options: Any,
+    ) -> Any:
+        """Schedule a background review after each threshold of newly created nodes."""
+        from .review import AutoReviewScheduler
+
+        scheduler = AutoReviewScheduler(
+            self,
+            threshold=threshold,
+            policy=policy,
+            strategy=strategy,
+            chat_options=chat_options,
+        )
+        self._auto_reviewers.append(scheduler)
+        return scheduler
 
     def _session(self) -> Session:
         return self._session_factory()

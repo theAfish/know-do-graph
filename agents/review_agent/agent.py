@@ -17,8 +17,10 @@ Configuration:
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
+from copy import deepcopy
 from typing import Any, Callable
 
 from openai import OpenAI
@@ -30,6 +32,7 @@ from agents.review_agent.tools import (
     REVIEW_TOOL_SCHEMAS,
 )
 from core.graph.graph import KnowDoGraph
+from know_do_graph.review import ReviewPolicy
 
 _DEFAULT_MODEL = "qwen-plus"
 
@@ -125,11 +128,15 @@ class ReviewAgent:
         on_status: Callable[[dict], None] | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        policy: ReviewPolicy | None = None,
+        strategy: str = "auto",
     ) -> None:
         self._graph = graph
         self._batch_size = batch_size
         self._on_step = on_step
         self._on_status = on_status
+        self._policy = policy or ReviewPolicy()
+        self._strategy = strategy
         self._model = model or os.environ.get(
             "REVIEW_AGENT_MODEL",
             os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL),
@@ -150,10 +157,96 @@ class ReviewAgent:
             + (instructions if instructions else "Apply all quality criteria from your instructions.")
         )
         history: list[dict] = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": self._policy_prompt()},
             {"role": "user", "content": user_msg},
         ]
-        return self._run_loop(history)
+        return self._run_loop(history, tools=self._review_tools())
+
+    def review_nodes(self, instructions: str = "") -> dict:
+        """Run a policy-controlled review and return structured progress/results."""
+        candidates = self._dispatch(
+            "sample_nodes_for_review",
+            json.dumps({"batch_size": self._batch_size, "strategy": self._strategy}),
+        )
+        if isinstance(candidates, dict) and candidates.get("error"):
+            result = {
+                "status": "failed",
+                "strategy": self._strategy,
+                "progress": {"completed": 0, "total": 0, "percent": 0},
+                "candidates": [],
+                "results": [],
+                "errors": [candidates["error"]],
+                "summary": "",
+            }
+            self._emit_review_status(result)
+            return result
+
+        selected = candidates if isinstance(candidates, list) else []
+        result = {
+            "status": "running",
+            "strategy": self._strategy,
+            "progress": {"completed": 0, "total": len(selected), "percent": 0},
+            "candidates": selected,
+            "results": [],
+            "errors": [],
+            "summary": "",
+        }
+        self._emit_review_status(result)
+        if not selected:
+            result["status"] = "completed"
+            result["summary"] = "No eligible nodes found."
+            self._emit_review_status(result)
+            return result
+
+        user_msg = (
+            f"Review exactly these {len(selected)} candidates selected with strategy "
+            f"'{self._strategy}':\n{json.dumps(selected, default=str)}"
+        )
+        if instructions:
+            user_msg += f"\nAdditional instructions: {instructions}"
+        history = [
+            {"role": "system", "content": self._policy_prompt()},
+            {"role": "user", "content": user_msg},
+        ]
+        candidate_ids = {item["id"] for item in selected}
+        completed_ids: set[str] = set()
+
+        def observe(name: str, outcome: Any) -> None:
+            record = {"action": name, "result": outcome}
+            result["results"].append(record)
+            if isinstance(outcome, dict) and outcome.get("error"):
+                result["errors"].append(outcome["error"])
+            ids = set()
+            if isinstance(outcome, dict):
+                ids.update(
+                    value
+                    for key, value in outcome.items()
+                    if key in {"id", "entry_id", "primary_id", "removed_duplicate_id"}
+                    and isinstance(value, str)
+                )
+            completed_ids.update(ids & candidate_ids)
+            completed = len(completed_ids)
+            total = len(selected)
+            result["progress"] = {
+                "completed": completed,
+                "total": total,
+                "percent": round(100 * completed / total),
+            }
+            self._emit_review_status(result)
+
+        tools = [
+            schema
+            for schema in self._review_tools()
+            if schema["function"]["name"] != "sample_nodes_for_review"
+        ]
+        result["summary"] = self._run_loop(
+            history,
+            tools=tools,
+            observe_result=observe,
+        )
+        result["status"] = "completed" if not result["errors"] else "completed_with_errors"
+        self._emit_review_status(result)
+        return result
 
     def chat(self, user_message: str) -> str:
         """Single-turn interactive review conversation (stateless)."""
@@ -323,6 +416,8 @@ class ReviewAgent:
         except json.JSONDecodeError as exc:
             return {"error": f"Bad arguments JSON: {exc}"}
         kwargs["graph"] = self._graph
+        if "policy" in inspect.signature(func).parameters:
+            kwargs["policy"] = self._policy
         try:
             return func(**kwargs)
         except Exception as exc:  # noqa: BLE001
@@ -334,3 +429,46 @@ class ReviewAgent:
             self._on_status(snapshot)
         if self._on_step:
             self._on_step("memory_review_status", snapshot)
+
+    def _emit_review_status(self, status: dict) -> None:
+        snapshot = json.loads(json.dumps(status, default=str))
+        if self._on_status:
+            self._on_status(snapshot)
+        if self._on_step:
+            self._on_step("review_status", snapshot)
+
+    def _review_tools(self) -> list[dict]:
+        action_for_tool = {
+            "update_entry": "modify",
+            "mark_reviewed": "modify",
+            "delete_entry": "delete",
+            "distill_entry": "distill",
+            "merge_entries": "merge_similar",
+            "create_edge": "link",
+            "delete_edge": "link",
+        }
+        tools = [
+            deepcopy(schema)
+            for schema in REVIEW_TOOL_SCHEMAS
+            if action_for_tool.get(schema["function"]["name"]) in self._policy.allowed_actions
+            or schema["function"]["name"] not in action_for_tool
+        ]
+        for schema in tools:
+            if schema["function"]["name"] == "update_entry":
+                properties = schema["function"]["parameters"]["properties"]
+                properties["verification_status"]["enum"] = sorted(
+                    status.value for status in self._policy.assignable_statuses
+                )
+        return tools
+
+    def _policy_prompt(self) -> str:
+        return (
+            _SYSTEM_PROMPT
+            + "\n## Enforced policy\n"
+            + f"Allowed actions: {sorted(self._policy.allowed_actions)}.\n"
+            + "Protected verification statuses may be inspected and linked, but never "
+            + f"mutated: {sorted(status.value for status in self._policy.protected_statuses)}.\n"
+            + "Assignable verification statuses: "
+            + f"{sorted(status.value for status in self._policy.assignable_statuses)}.\n"
+            + "The candidate list is already selected. Do not call the sampling tool."
+        )

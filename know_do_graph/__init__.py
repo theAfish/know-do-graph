@@ -16,6 +16,7 @@ from core.version import __version__
 
 from .chat import ChatSession
 from .client import KDG, KnowDoGraph
+from .review import AutoReviewScheduler, ReviewPolicy, ReviewStrategy
 
 __all__ = [
     "Edge",
@@ -24,6 +25,7 @@ __all__ = [
     "EntryMetadata",
     "EntryType",
     "ChatSession",
+    "AutoReviewScheduler",
     "KDG",
     "KnowDoGraph",
     "MemEntry",
@@ -31,6 +33,8 @@ __all__ = [
     "MemSourceFormat",
     "NodeAsset",
     "RefinementStatus",
+    "ReviewPolicy",
+    "ReviewStrategy",
     "ScriptAttachment",
     "SkillLevel",
     "VerificationStatus",

@@ -9,6 +9,7 @@ from core.storage.database import bind_session_factory
 
 if TYPE_CHECKING:
     from .client import KnowDoGraph
+    from .review import ReviewPolicy, ReviewStrategy
 
 AgentKind = Literal["graph", "orchestrator", "reviewer"]
 StepCallback = Callable[[str, dict], None]
@@ -34,6 +35,8 @@ class ChatSession:
         api_key: str | None = None,
         base_url: str | None = None,
         batch_size: int = 5,
+        policy: "ReviewPolicy | None" = None,
+        strategy: "ReviewStrategy" = "auto",
     ) -> None:
         if agent not in ("graph", "orchestrator", "reviewer"):
             raise ValueError("agent must be 'graph', 'orchestrator', or 'reviewer'")
@@ -67,6 +70,8 @@ class ChatSession:
                 **common,
                 batch_size=batch_size,
                 on_status=on_status,
+                policy=policy,
+                strategy=strategy,
             )
 
     def send(self, message: str) -> str:
@@ -99,6 +104,13 @@ class ChatSession:
                 session_id=session_id,
                 instructions=instructions,
             )
+
+    def review_nodes(self, instructions: str = "") -> dict:
+        """Run a structured policy-controlled node review."""
+        if self.agent_kind != "reviewer":
+            raise TypeError("review_nodes() is only available for reviewer sessions")
+        with self._lock, bind_session_factory(self.graph._session_factory):
+            return self._agent.review_nodes(instructions=instructions)
 
     def reset(self) -> None:
         """Clear conversation history when supported by the selected agent."""

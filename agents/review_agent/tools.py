@@ -15,6 +15,41 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+def _policy_or_default(policy: Any = None) -> Any:
+    from know_do_graph.review import ReviewPolicy
+
+    return policy or ReviewPolicy()
+
+
+def _mutation_error(entry: Any, action: str, policy: Any) -> dict | None:
+    if action not in policy.allowed_actions:
+        return {"error": f"Review action '{action}' is not permitted by policy."}
+    if entry.entry_type in policy.exclude_types:
+        return {"error": f"Entry type '{entry.entry_type.value}' is excluded from review."}
+    if entry.metadata.verification_status in policy.protected_statuses:
+        return {
+            "error": (
+                f"Entry '{entry.id}' has protected verification status "
+                f"'{entry.metadata.verification_status.value}'."
+            )
+        }
+    return None
+
+
+def _entry_summary(entry: Any) -> dict:
+    return {
+        "id": entry.id,
+        "slug": entry.slug,
+        "title": entry.title,
+        "type": entry.entry_type.value,
+        "tags": entry.tags,
+        "aliases": entry.aliases,
+        "verification_status": entry.metadata.verification_status.value,
+        "review_count": entry.metadata.review_count,
+        "modify_count": entry.metadata.modify_count,
+    }
+
+
 def _memory_metadata(entry: Any) -> dict:
     data = entry.metadata.custom.get("memory", {})
     return data if isinstance(data, dict) else {}
@@ -25,7 +60,12 @@ def _memory_metadata(entry: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def sample_nodes_for_review(batch_size: int = 5, graph: Any = None) -> list[dict]:
+def sample_nodes_for_review(
+    batch_size: int = 5,
+    strategy: str = "seed",
+    graph: Any = None,
+    policy: Any = None,
+) -> list[dict]:
     """Return a weighted-random sample of nodes, preferring those with low review_count.
 
     Nodes with fewer reviews are much more likely to be selected so the agent
@@ -42,34 +82,62 @@ def sample_nodes_for_review(batch_size: int = 5, graph: Any = None) -> list[dict
         engine = RetrievalEngine(db, g)
         all_entries = engine.list_entries(limit=5000)
 
-    if not all_entries:
+    policy = _policy_or_default(policy)
+    candidates = [entry for entry in all_entries if entry.entry_type not in policy.exclude_types]
+    if not candidates or batch_size <= 0:
         return []
 
-    # Weight = 1 / (review_count + 1)  → unseen nodes are most likely
-    weights = [1.0 / (e.metadata.review_count + 1) for e in all_entries]
-    k = min(batch_size, len(all_entries))
-    selected = random.choices(all_entries, weights=weights, k=k)
-    # Deduplicate while preserving order
-    seen_ids: set[str] = set()
-    unique: list = []
-    for e in selected:
-        if e.id not in seen_ids:
-            seen_ids.add(e.id)
-            unique.append(e)
+    normalized = strategy.lower()
+    if normalized == "auto":
+        normalized = "global" if len(candidates) >= max(20, batch_size * 4) else "seed"
+    if normalized not in {"seed", "global"}:
+        raise ValueError("strategy must be 'seed', 'global', or 'auto'")
 
-    return [
-        {
-            "id": e.id,
-            "slug": e.slug,
-            "title": e.title,
-            "type": e.entry_type.value,
-            "tags": e.tags,
-            "aliases": e.aliases,
-            "review_count": e.metadata.review_count,
-            "modify_count": e.metadata.modify_count,
-        }
-        for e in unique
-    ]
+    if normalized == "global":
+        degree = dict(g._g.degree())  # type: ignore[attr-defined]
+        selected = sorted(
+            candidates,
+            key=lambda entry: (
+                entry.metadata.review_count,
+                degree.get(entry.id, 0) != 0,
+                -degree.get(entry.id, 0),
+                entry.metadata.timestamp,
+            ),
+        )[:batch_size]
+        return [_entry_summary(entry) for entry in selected]
+
+    weights = [1.0 / (entry.metadata.review_count + 1) for entry in candidates]
+    seed = random.choices(candidates, weights=weights, k=1)[0]
+    selected = [seed]
+    selected_ids = {seed.id}
+
+    for neighbor in g.get_neighbors(seed.id, direction="both"):
+        entry = next((item for item in candidates if item.id == neighbor["id"]), None)
+        if entry is not None and entry.id not in selected_ids:
+            selected.append(entry)
+            selected_ids.add(entry.id)
+            if len(selected) >= batch_size:
+                break
+
+    if len(selected) < batch_size:
+        with SessionLocal() as db:
+            similar = RetrievalEngine(db, g).search_entries(
+                seed.title, limit=batch_size * 2, mode="hybrid"
+            )
+        for entry in similar:
+            if entry.entry_type in policy.exclude_types or entry.id in selected_ids:
+                continue
+            selected.append(entry)
+            selected_ids.add(entry.id)
+            if len(selected) >= batch_size:
+                break
+
+    if len(selected) < batch_size:
+        remaining = [entry for entry in candidates if entry.id not in selected_ids]
+        remaining.sort(key=lambda entry: (entry.metadata.review_count, entry.metadata.timestamp))
+        selected.extend(remaining[: batch_size - len(selected)])
+
+    return [_entry_summary(entry) for entry in selected]
 
 
 def get_graph_summary(graph: Any = None) -> dict:
@@ -390,7 +458,12 @@ def inspect_node(identifier: str, graph: Any = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def mark_reviewed(entry_id: str, was_modified: bool = False, graph: Any = None) -> dict:
+def mark_reviewed(
+    entry_id: str,
+    was_modified: bool = False,
+    graph: Any = None,
+    policy: Any = None,
+) -> dict:
     """Increment review_count (and optionally modify_count) on an entry.
 
     Call this after inspecting a node, regardless of whether changes were made.
@@ -407,6 +480,10 @@ def mark_reviewed(entry_id: str, was_modified: bool = False, graph: Any = None) 
         entry = engine.get_entry_by_id(entry_id)
         if entry is None:
             return {"error": f"Entry '{entry_id}' not found."}
+        policy = _policy_or_default(policy)
+        denied = _mutation_error(entry, "modify", policy)
+        if denied:
+            return denied
 
         entry.metadata.review_count += 1
         entry.metadata.last_reviewed_at = datetime.now(timezone.utc)
@@ -438,6 +515,8 @@ def update_entry(
     aliases: list[str] | None = None,
     verification_status: str | None = None,
     graph: Any = None,
+    policy: Any = None,
+    policy_action: str = "modify",
 ) -> dict:
     """Update an entry and record one modified review.
 
@@ -449,16 +528,11 @@ def update_entry(
     from core.storage.database import SessionLocal
     from core.storage.repository import EntryRepository
 
-    allowed_statuses = {
-        VerificationStatus.unverified.value,
-        VerificationStatus.self_tested.value,
-    }
+    policy = _policy_or_default(policy)
+    allowed_statuses = {status.value for status in policy.assignable_statuses}
     if verification_status is not None and verification_status not in allowed_statuses:
         return {
-            "error": (
-                "ReviewAgent may only set verification_status to "
-                "'unverified' or 'self_tested'."
-            )
+            "error": f"Review policy does not permit verification_status '{verification_status}'."
         }
 
     g = graph or app_state.graph
@@ -466,6 +540,9 @@ def update_entry(
         entry = RetrievalEngine(db, g).resolve_identifier(entry_id)
         if entry is None:
             return {"error": f"Entry '{entry_id}' not found."}
+        denied = _mutation_error(entry, policy_action, policy)
+        if denied:
+            return denied
         if title is not None:
             entry.title = title
         if content is not None:
@@ -497,25 +574,68 @@ def update_entry(
     }
 
 
+def distill_entry(
+    entry_id: str,
+    title: str | None = None,
+    content: str | None = None,
+    tags: list[str] | None = None,
+    aliases: list[str] | None = None,
+    graph: Any = None,
+    policy: Any = None,
+) -> dict:
+    """Condense an entry while preserving its identity."""
+    return update_entry(
+        entry_id=entry_id,
+        title=title,
+        content=content,
+        tags=tags,
+        aliases=aliases,
+        graph=graph,
+        policy=policy,
+        policy_action="distill",
+    )
+
+
 def merge_entries(
     primary_id: str,
     duplicate_id: str,
     merge_aliases: bool = True,
     merge_tags: bool = True,
     graph: Any = None,
+    policy: Any = None,
 ) -> dict:
     """Merge duplicate into primary, then mark primary as modified."""
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.storage.database import SessionLocal
     from agents.graph_agent.tools import merge_entries as _merge_entries
 
+    policy = _policy_or_default(policy)
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        primary = engine.resolve_identifier(primary_id)
+        duplicate = engine.resolve_identifier(duplicate_id)
+        if primary is None:
+            return {"error": f"Primary entry '{primary_id}' not found."}
+        if duplicate is None:
+            return {"error": f"Duplicate entry '{duplicate_id}' not found."}
+        for entry in (primary, duplicate):
+            denied = _mutation_error(entry, "merge_similar", policy)
+            if denied:
+                return denied
     result = _merge_entries(
         primary_id=primary_id,
         duplicate_id=duplicate_id,
         merge_aliases=merge_aliases,
         merge_tags=merge_tags,
-        graph=graph,
+        graph=g,
+        mutation_validator=lambda entry: _mutation_error(
+            entry, "merge_similar", policy
+        ),
     )
     if result.get("merged"):
-        mark_reviewed(result["primary_id"], was_modified=True, graph=graph)
+        mark_reviewed(result["primary_id"], was_modified=True, graph=g, policy=policy)
     return result
 
 
@@ -532,18 +652,47 @@ def create_edge(
     relation: str = "related_to",
     weight: float = 1.0,
     graph: Any = None,
+    policy: Any = None,
 ) -> dict:
     """Create an edge between two entries."""
+    policy = _policy_or_default(policy)
+    if "link" not in policy.allowed_actions:
+        return {"error": "Review action 'link' is not permitted by policy."}
     from agents.graph_agent.tools import create_edge as _create_edge
 
     return _create_edge(source_id=source_id, target_id=target_id, relation=relation, weight=weight, graph=graph)
 
 
-def delete_edge(edge_id: str, graph: Any = None) -> dict:
+def delete_edge(edge_id: str, graph: Any = None, policy: Any = None) -> dict:
     """Delete an edge by ID."""
+    policy = _policy_or_default(policy)
+    if "link" not in policy.allowed_actions:
+        return {"error": "Review action 'link' is not permitted by policy."}
     from agents.graph_agent.tools import delete_edge as _delete_edge
 
     return _delete_edge(edge_id=edge_id, graph=graph)
+
+
+def delete_entry(entry_id: str, graph: Any = None, policy: Any = None) -> dict:
+    """Delete a reviewable entry after policy validation."""
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EntryRepository
+
+    policy = _policy_or_default(policy)
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        entry = RetrievalEngine(db, g).resolve_identifier(entry_id)
+        if entry is None:
+            return {"error": f"Entry '{entry_id}' not found."}
+        denied = _mutation_error(entry, "delete", policy)
+        if denied:
+            return denied
+        deleted = EntryRepository(db).delete(entry.id)
+    if deleted:
+        g.remove_entry(entry.id)
+    return {"deleted": bool(deleted), "entry_id": entry.id}
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +801,27 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "distill_entry",
+            "description": (
+                "Condense a verbose node into concise reusable knowledge while preserving "
+                "its identity. This records a modified review."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entry_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["entry_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_entries",
             "description": (
                 "Search for nodes using hybrid semantic + keyword retrieval. "
@@ -704,6 +874,18 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "delete_entry",
+            "description": "Delete a low-value or invalid node when policy permits deletion.",
+            "parameters": {
+                "type": "object",
+                "properties": {"entry_id": {"type": "string"}},
+                "required": ["entry_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_edge",
             "description": "Add a typed edge between two nodes when a relationship is missing.",
             "parameters": {
@@ -746,8 +928,10 @@ REVIEW_TOOL_DISPATCH: dict[str, Any] = {
     "inspect_node": inspect_node,
     "mark_reviewed": mark_reviewed,
     "update_entry": update_entry,
+    "distill_entry": distill_entry,
     "search_entries": search_entries,
     "merge_entries": merge_entries,
+    "delete_entry": delete_entry,
     "create_edge": create_edge,
     "delete_edge": delete_edge,
 }

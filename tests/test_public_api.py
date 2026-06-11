@@ -11,6 +11,7 @@ from know_do_graph import (
     EntryMetadata,
     EntryType,
     KnowDoGraph,
+    ReviewPolicy,
     VerificationStatus,
 )
 
@@ -155,6 +156,111 @@ class PublicApiTests(unittest.TestCase):
             VerificationStatus.community_tested,
         )
         self.assertEqual(manually_updated.metadata.review_count, 1)
+
+    def test_review_policy_filters_and_enforces_mutations(self) -> None:
+        from agents.review_agent.tools import (
+            create_edge,
+            delete_entry,
+            sample_nodes_for_review,
+            update_entry,
+        )
+        from core.storage.database import bind_session_factory
+
+        protected = self.graph.add("Protected Knowledge")
+        protected = self.graph.set_verification_status(
+            protected.id, VerificationStatus.peer_reviewed
+        )
+        ordinary = self.graph.add("Ordinary Knowledge")
+        memory = self.graph.memory("review-policy").add("Transient trace")
+        policy = ReviewPolicy(
+            exclude_types={EntryType.memory},
+            protected_statuses={VerificationStatus.peer_reviewed},
+            assignable_statuses={VerificationStatus.bugged},
+            allowed_actions={"modify", "link"},
+        )
+
+        with bind_session_factory(self.graph._session_factory):
+            sampled = sample_nodes_for_review(
+                batch_size=10,
+                strategy="global",
+                graph=self.graph._graph,
+                policy=policy,
+            )
+            denied = update_entry(
+                protected.id,
+                title="Changed",
+                graph=self.graph._graph,
+                policy=policy,
+            )
+            assigned = update_entry(
+                ordinary.id,
+                verification_status="bugged",
+                graph=self.graph._graph,
+                policy=policy,
+            )
+            deletion = delete_entry(ordinary.id, graph=self.graph._graph, policy=policy)
+            linked = create_edge(
+                protected.id,
+                ordinary.id,
+                relation="related_workflow",
+                graph=self.graph._graph,
+                policy=policy,
+            )
+
+        self.assertNotIn(memory.id, {item["id"] for item in sampled})
+        self.assertIn("protected", denied["error"])
+        self.assertEqual(assigned["verification_status"], "bugged")
+        self.assertIn("not permitted", deletion["error"])
+        self.assertNotIn("error", linked)
+
+    def test_structured_review_nodes_progress(self) -> None:
+        from agents.review_agent.agent import ReviewAgent
+        from core.storage.database import bind_session_factory
+
+        entry = self.graph.add("Structured Review Target")
+        statuses = []
+        agent = ReviewAgent(
+            self.graph._graph,
+            api_key="test-key",
+            batch_size=1,
+            strategy="global",
+            on_status=statuses.append,
+        )
+
+        def fake_run_loop(_history, *, tools, observe_result):
+            self.assertNotIn(
+                "sample_nodes_for_review",
+                {tool["function"]["name"] for tool in tools},
+            )
+            outcome = agent._dispatch(
+                "mark_reviewed",
+                f'{{"entry_id": "{entry.id}"}}',
+            )
+            observe_result("mark_reviewed", outcome)
+            return "Reviewed one node."
+
+        with bind_session_factory(self.graph._session_factory):
+            with patch.object(agent, "_run_loop", side_effect=fake_run_loop):
+                result = agent.review_nodes()
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["strategy"], "global")
+        self.assertEqual(result["progress"], {"completed": 1, "total": 1, "percent": 100})
+        self.assertEqual(statuses[0]["status"], "running")
+        self.assertEqual(statuses[-1]["status"], "completed")
+
+    def test_auto_review_threshold_scheduler(self) -> None:
+        with patch("know_do_graph.review.Thread") as thread:
+            scheduler = self.graph.auto_review(threshold=2, api_key="test-key")
+            self.graph.add("First Scheduled Node")
+            thread.assert_not_called()
+            self.graph.add("Second Scheduled Node")
+
+        thread.assert_called_once()
+        self.assertEqual(thread.call_args.kwargs["name"], "kdg-auto-review")
+        self.assertTrue(thread.call_args.kwargs["daemon"])
+        scheduler.stop()
+        self.assertNotIn(scheduler, self.graph._auto_reviewers)
 
     def test_chat_tools_are_bound_to_the_client_database(self) -> None:
         self.graph.add("Client-owned entry")
