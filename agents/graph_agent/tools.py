@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -493,6 +493,7 @@ def merge_entries(
     merge_aliases: bool = True,
     merge_tags: bool = True,
     graph: Any = None,
+    mutation_validator: Callable[[Any], dict | None] | None = None,
 ) -> dict:
     """Merge *duplicate_id* into *primary_id*.
 
@@ -519,6 +520,11 @@ def merge_entries(
             return {"error": f"Duplicate entry '{duplicate_id}' not found."}
         if primary.id == duplicate.id:
             return {"error": "primary_id and duplicate_id refer to the same entry."}
+        if mutation_validator is not None:
+            for entry in (primary, duplicate):
+                denied = mutation_validator(entry)
+                if denied:
+                    return denied
 
         # Re-target edges
         edges_retargeted = 0

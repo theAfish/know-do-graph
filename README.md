@@ -130,6 +130,53 @@ with KnowDoGraph("data/my_agent.db") as graph:
     print(reviewer.review("Focus on duplicate titles and inconsistent tags."))
 ```
 
+For reusable integrations, configure a policy and use structured node review:
+
+```python
+from know_do_graph import EntryType, ReviewPolicy, VerificationStatus
+
+policy = ReviewPolicy(
+    exclude_types={EntryType.memory},
+    protected_statuses={
+        VerificationStatus.peer_reviewed,
+        VerificationStatus.community_tested,
+    },
+    assignable_statuses={
+        VerificationStatus.unverified,
+        VerificationStatus.self_tested,
+        VerificationStatus.bugged,
+        VerificationStatus.deprecated,
+    },
+    allowed_actions={"modify", "delete", "distill", "merge_similar", "link"},
+)
+
+with KnowDoGraph("data/my_agent.db") as graph:
+    reviewer = graph.chat(
+        agent="reviewer",
+        policy=policy,
+        strategy="seed",  # seed, global, or auto
+        batch_size=10,
+        on_status=lambda status: print(status["progress"]),
+    )
+    result = reviewer.review_nodes()
+
+    scheduler = graph.auto_review(
+        threshold=20,
+        policy=policy,
+        strategy="auto",
+        model="qwen-plus",
+    )
+```
+
+`seed` expands from a weighted random under-reviewed node through neighbors
+and similar entries. `global` prioritizes under-reviewed, isolated, and highly
+connected nodes using graph statistics. Policy checks run inside every review
+mutation tool; protected nodes may still be linked but cannot be changed,
+deleted, distilled, merged, or have review metadata updated. The automatic
+scheduler counts nodes created through this `KnowDoGraph` client and runs in a
+background thread when the threshold is reached. Call `scheduler.stop()` to
+disable it.
+
 Review raw memory separately and receive structured progress/results:
 
 ```python
