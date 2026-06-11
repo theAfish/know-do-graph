@@ -21,6 +21,7 @@ class KnowDoGraph:
 
     def __init__(self) -> None:
         self._g: nx.DiGraph = nx.DiGraph()
+        self._g.graph["unreviewed_nodes"] = 0
 
     # ------------------------------------------------------------------
     # Nodes
@@ -28,6 +29,15 @@ class KnowDoGraph:
 
     def add_entry(self, entry: Entry) -> None:
         md = entry.metadata
+        existed = self._g.has_node(entry.id)
+        was_unreviewed = (
+            existed and self._g.nodes[entry.id].get("review_count", 0) == 0
+        )
+        is_unreviewed = md.review_count == 0
+        if not existed and is_unreviewed:
+            self._g.graph["unreviewed_nodes"] += 1
+        elif existed and was_unreviewed != is_unreviewed:
+            self._g.graph["unreviewed_nodes"] += 1 if is_unreviewed else -1
         timestamp = md.timestamp.isoformat() if getattr(md, "timestamp", None) else None
         verification = (
             md.verification_status.value
@@ -49,11 +59,14 @@ class KnowDoGraph:
             usage_count=md.usage_count,
             trust_score=md.trust_score,
             verification_status=verification,
+            review_count=md.review_count,
             skill_level=level_value,
         )
 
     def remove_entry(self, entry_id: str) -> None:
         if self._g.has_node(entry_id):
+            if self._g.nodes[entry_id].get("review_count", 0) == 0:
+                self._g.graph["unreviewed_nodes"] -= 1
             self._g.remove_node(entry_id)
 
     # ------------------------------------------------------------------
@@ -193,6 +206,7 @@ class KnowDoGraph:
             "nodes": self._g.number_of_nodes(),
             "edges": self._g.number_of_edges(),
             "is_dag": nx.is_directed_acyclic_graph(self._g),
+            "unreviewed_nodes": self._g.graph["unreviewed_nodes"],
         }
 
     def rebuild_from_db(self, entries: list[Entry], edges: list[Edge]) -> None:
@@ -204,6 +218,7 @@ class KnowDoGraph:
         are never allowed to materialise ghost nodes in the in-memory graph.
         """
         self._g.clear()
+        self._g.graph["unreviewed_nodes"] = 0
         for entry in entries:
             self.add_entry(entry)
         skipped = 0

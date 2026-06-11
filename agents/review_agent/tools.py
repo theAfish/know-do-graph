@@ -92,16 +92,16 @@ def get_graph_summary(graph: Any = None) -> dict:
         all_entries = engine.list_entries(limit=5000)
 
     type_dist = dict(Counter(e.entry_type.value for e in all_entries))
-    reviewed = sum(1 for e in all_entries if e.metadata.review_count > 0)
     total = len(all_entries)
+    unreviewed = stats["unreviewed_nodes"]
 
     return {
         "stats": stats,
         "type_distribution": type_dist,
         "total_nodes": total,
-        "reviewed_nodes": reviewed,
-        "unreviewed_nodes": total - reviewed,
-        "review_coverage_pct": round(100 * reviewed / total, 1) if total else 0,
+        "reviewed_nodes": total - unreviewed,
+        "unreviewed_nodes": unreviewed,
+        "review_coverage_pct": round(100 * (total - unreviewed) / total, 1) if total else 0,
     }
 
 
@@ -413,7 +413,9 @@ def mark_reviewed(entry_id: str, was_modified: bool = False, graph: Any = None) 
         if was_modified:
             entry.metadata.modify_count += 1
 
-        EntryRepository(db).update(entry)
+        saved = EntryRepository(db).update(entry)
+        if saved is not None:
+            g.add_entry(saved)
 
     return {
         "entry_id": entry_id,
@@ -434,23 +436,65 @@ def update_entry(
     entry_type: str | None = None,
     tags: list[str] | None = None,
     aliases: list[str] | None = None,
+    verification_status: str | None = None,
     graph: Any = None,
 ) -> dict:
-    """Update fields on an existing entry and bump modify_count."""
-    from agents.graph_agent.tools import update_entry as _update_entry
+    """Update an entry and record one modified review.
 
-    result = _update_entry(
-        entry_id=entry_id,
-        title=title,
-        content=content,
-        entry_type=entry_type,
-        tags=tags,
-        aliases=aliases,
-        graph=graph,
-    )
-    if "error" not in result:
-        mark_reviewed(result["id"], was_modified=True, graph=graph)
-    return result
+    The review agent may only assign low-confidence verification states.
+    """
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.entry import EntryType, VerificationStatus
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EntryRepository
+
+    allowed_statuses = {
+        VerificationStatus.unverified.value,
+        VerificationStatus.self_tested.value,
+    }
+    if verification_status is not None and verification_status not in allowed_statuses:
+        return {
+            "error": (
+                "ReviewAgent may only set verification_status to "
+                "'unverified' or 'self_tested'."
+            )
+        }
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        entry = RetrievalEngine(db, g).resolve_identifier(entry_id)
+        if entry is None:
+            return {"error": f"Entry '{entry_id}' not found."}
+        if title is not None:
+            entry.title = title
+        if content is not None:
+            entry.content = content
+            entry.refresh_refs()
+        if entry_type is not None:
+            entry.entry_type = EntryType(entry_type)
+        if tags is not None:
+            entry.tags = tags
+        if aliases is not None:
+            entry.aliases = aliases
+        if verification_status is not None:
+            entry.metadata.verification_status = VerificationStatus(verification_status)
+        entry.metadata.review_count += 1
+        entry.metadata.modify_count += 1
+        entry.metadata.last_reviewed_at = datetime.now(timezone.utc)
+        saved = EntryRepository(db).update(entry)
+
+    if saved is None:
+        return {"error": "Update failed."}
+    g.add_entry(saved)
+    return {
+        "id": saved.id,
+        "slug": saved.slug,
+        "title": saved.title,
+        "verification_status": saved.metadata.verification_status.value,
+        "review_count": saved.metadata.review_count,
+        "modify_count": saved.metadata.modify_count,
+    }
 
 
 def merge_entries(
@@ -559,7 +603,7 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
             "name": "mark_reviewed",
             "description": (
                 "Record that you have reviewed a node. "
-                "Must be called for every node you inspect, even if no changes were made. "
+                "Call this only when no update or merge tool recorded the review. "
                 "Set was_modified=True if you also edited the node."
             ),
             "parameters": {
@@ -577,7 +621,8 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "update_entry",
             "description": (
-                "Update title, tags, aliases, content, or type of a node. "
+                "Update title, tags, aliases, content, type, or verification status of a node. "
+                "This records the node as reviewed, so do not call mark_reviewed afterward. "
                 "Use to: fix titles containing parenthetical acronyms (move acronym to aliases), "
                 "normalise tags to lowercase-hyphenated, remove redundant prefixes from titles, "
                 "or correct the entry_type."
@@ -595,6 +640,10 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
                     },
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "aliases": {"type": "array", "items": {"type": "string"}},
+                    "verification_status": {
+                        "type": "string",
+                        "enum": ["unverified", "self_tested"],
+                    },
                 },
                 "required": ["entry_id"],
             },

@@ -89,6 +89,10 @@ class EntryRepository:
     def create(self, entry: Entry) -> Entry:
         from core.storage.models import EntryModel
 
+        # A newly-created node always starts with no review history.
+        entry.metadata.review_count = 0
+        entry.metadata.modify_count = 0
+        entry.metadata.last_reviewed_at = None
         slug = _unique_slug(self._db, entry.slug or _slug(entry.title), entry.id)
         model = EntryModel(
             id=entry.id,

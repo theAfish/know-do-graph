@@ -12,7 +12,7 @@ from core.memory.memgraph import MemGraph
 from core.retrieval.progressive import ProgressiveRetriever
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import Edge, EdgeRelation
-from core.schemas.entry import Entry, EntryMetadata, EntryType
+from core.schemas.entry import Entry, EntryMetadata, EntryType, VerificationStatus
 from core.storage.database import create_database_engine, initialize_database
 from core.storage.repository import EdgeRepository, EntryRepository
 
@@ -144,6 +144,21 @@ class KnowDoGraph:
         updated._sync_scripts_and_assets()
         with self._session() as db:
             saved = EntryRepository(db).update(updated)
+        if saved is None:
+            raise KeyError(f"Entry not found: {identifier}")
+        self._graph.add_entry(saved)
+        return saved
+
+    def set_verification_status(
+        self,
+        identifier: str,
+        status: VerificationStatus | str,
+    ) -> Entry:
+        """Manually assign any verification status to a node."""
+        current = self._require(identifier)
+        current.metadata.verification_status = VerificationStatus(status)
+        with self._session() as db:
+            saved = EntryRepository(db).update(current)
         if saved is None:
             raise KeyError(f"Entry not found: {identifier}")
         self._graph.add_entry(saved)
