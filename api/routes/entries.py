@@ -89,6 +89,8 @@ def create_entry(entry: Entry, db: Session = Depends(get_db)):
 def update_entry(entry_id: str, entry: Entry, db: Session = Depends(get_db)):
     """Update an existing entry."""
     entry.id = entry_id
+    entry.refresh_refs()
+    entry._sync_scripts_and_assets()
     updated = EntryRepository(db).update(entry)
     if not updated:
         raise HTTPException(status_code=404, detail="Entry not found")

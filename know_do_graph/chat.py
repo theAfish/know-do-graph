@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 AgentKind = Literal["graph", "orchestrator", "reviewer"]
 StepCallback = Callable[[str, dict], None]
+StatusCallback = Callable[[dict], None]
 
 
 class ChatSession:
@@ -29,6 +30,7 @@ class ChatSession:
         model: str | None = None,
         read_only: bool = False,
         on_step: StepCallback | None = None,
+        on_status: StatusCallback | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
         batch_size: int = 5,
@@ -61,7 +63,11 @@ class ChatSession:
         else:
             from agents.review_agent.agent import ReviewAgent
 
-            self._agent = ReviewAgent(**common, batch_size=batch_size)
+            self._agent = ReviewAgent(
+                **common,
+                batch_size=batch_size,
+                on_status=on_status,
+            )
 
     def send(self, message: str) -> str:
         """Send one message while preserving this session's conversation history."""
@@ -78,6 +84,21 @@ class ChatSession:
             raise TypeError("review() is only available for reviewer sessions")
         with self._lock, bind_session_factory(self.graph._session_factory):
             return self._agent.run_review(instructions=instructions)
+
+    def review_memory(
+        self,
+        *,
+        session_id: str | None = None,
+        instructions: str = "",
+    ) -> dict:
+        """Distil one memory batch. Only available for reviewer sessions."""
+        if self.agent_kind != "reviewer":
+            raise TypeError("review_memory() is only available for reviewer sessions")
+        with self._lock, bind_session_factory(self.graph._session_factory):
+            return self._agent.run_memory_review(
+                session_id=session_id,
+                instructions=instructions,
+            )
 
     def reset(self) -> None:
         """Clear conversation history when supported by the selected agent."""

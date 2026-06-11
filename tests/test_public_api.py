@@ -6,7 +6,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
-from know_do_graph import EdgeRelation, EntryType, KnowDoGraph
+from know_do_graph import EdgeRelation, EntryType, KnowDoGraph, VerificationStatus
 
 
 class PublicApiTests(unittest.TestCase):
@@ -116,6 +116,117 @@ class PublicApiTests(unittest.TestCase):
             self.assertEqual(chat.send("second"), "second:1:2")
             chat.reset()
             self.assertEqual(chat.send("again"), "again:1:1")
+
+    def test_memory_distillation_tools_enforce_hierarchy(self) -> None:
+        from agents.review_agent.tools import distill_memory, sample_memory_nodes
+        from core.storage.database import bind_session_factory
+
+        capability = self.graph.add(
+            "Validate Relaxation",
+            content="Check whether an atomistic relaxation converged.",
+            entry_type=EntryType.capability,
+        )
+        memory = self.graph.memory("matcreator")
+        l1_trace = memory.add("Reusable capability: generate coherent interfaces.")
+        l3_trace = memory.add("Prefer lower mismatch when two interface matches are available.")
+        noise_trace = memory.add("Still running, will report back soon.")
+        other_trace = self.graph.memory("other-session").add("Unrelated session memory.")
+
+        with bind_session_factory(self.graph._session_factory):
+            sampled = sample_memory_nodes(
+                batch_size=10,
+                session_id="matcreator",
+                graph=self.graph._graph,
+            )
+            self.assertEqual(
+                {item["id"] for item in sampled},
+                {l1_trace.id, l3_trace.id, noise_trace.id},
+            )
+            self.assertNotIn(other_trace.id, {item["id"] for item in sampled})
+
+            promoted = distill_memory(
+                l1_trace.id,
+                "L1",
+                title="Generate Coherent Interfaces",
+                reason="Reusable high-level ability",
+                graph=self.graph._graph,
+            )
+            linked = distill_memory(
+                l3_trace.id,
+                "L3",
+                title="Prefer Lower Interface Mismatch",
+                target_id=capability.id,
+                reason="Conditional operational guidance",
+                graph=self.graph._graph,
+            )
+            deleted = distill_memory(
+                noise_trace.id,
+                "noise",
+                reason="Transient status only",
+                graph=self.graph._graph,
+            )
+
+        promoted_entry = self.graph.get(promoted["entry"]["id"])
+        self.assertEqual(promoted["action"], "promoted")
+        self.assertEqual(promoted_entry.entry_type, EntryType.capability)
+        self.assertEqual(
+            promoted_entry.metadata.verification_status,
+            VerificationStatus.unverified,
+        )
+        self.assertEqual(linked["action"], "linked")
+        self.assertEqual(self.graph.get(linked["entry"]["id"]).entry_type, EntryType.heuristic)
+        self.assertEqual(
+            self.graph.related(
+                linked["entry"]["id"],
+                relation=EdgeRelation.heuristic_for,
+            )[0].id,
+            capability.id,
+        )
+        self.assertEqual(deleted["action"], "deleted")
+        self.assertIsNone(self.graph.get(noise_trace.id))
+        refreshed_memory = self.graph.memory("matcreator")
+        self.assertTrue(refreshed_memory.get(l1_trace.id).promoted)
+        self.assertTrue(refreshed_memory.get(l3_trace.id).promoted)
+
+    def test_memory_review_returns_structured_progress(self) -> None:
+        from agents.review_agent.agent import ReviewAgent
+        from core.storage.database import bind_session_factory
+
+        trace = self.graph.memory("matcreator").add(
+            "A reusable procedure for checking force convergence."
+        )
+        statuses = []
+        agent = ReviewAgent(
+            self.graph._graph,
+            api_key="test-key",
+            batch_size=5,
+            on_status=statuses.append,
+        )
+
+        def fake_run_loop(_history, *, tools, dispatch, observe_result):
+            self.assertTrue(tools)
+            result = agent._dispatch(
+                "distill_memory",
+                (
+                    '{"memory_id": "%s", "classification": "L2", '
+                    '"title": "Check Force Convergence", '
+                    '"reason": "Reusable execution procedure"}'
+                )
+                % trace.id,
+                dispatch=dispatch,
+            )
+            observe_result("distill_memory", result)
+            return "Created one L2 procedure."
+
+        with bind_session_factory(self.graph._session_factory):
+            with patch.object(agent, "_run_loop", side_effect=fake_run_loop):
+                result = agent.run_memory_review(session_id="matcreator")
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["progress"], {"completed": 1, "total": 1, "percent": 100})
+        self.assertEqual(result["results"][0]["classification"], "L2")
+        self.assertEqual(statuses[0]["status"], "running")
+        self.assertEqual(statuses[-1]["status"], "completed")
 
 
 if __name__ == "__main__":

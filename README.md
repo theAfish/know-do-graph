@@ -130,6 +130,38 @@ with KnowDoGraph("data/my_agent.db") as graph:
     print(reviewer.review("Focus on duplicate titles and inconsistent tags."))
 ```
 
+Review raw memory separately and receive structured progress/results:
+
+```python
+def on_status(status: dict) -> None:
+    print(status["status"], status["progress"])
+
+with KnowDoGraph("data/my_agent.db") as graph:
+    reviewer = graph.chat(
+        agent="reviewer",
+        model="qwen-plus",
+        batch_size=10,
+        on_status=on_status,
+    )
+    result = reviewer.review_memory(session_id="matcreator")
+    print(result["results"], result["errors"])
+```
+
+Memory review samples only unpromoted `memory` nodes. It classifies each trace
+as L1/L2/L3/L4, noise, or skip. L1/L2 become unverified capability/procedure
+nodes; L3/L4 become heuristic/constraint nodes linked to an existing L1/L2
+node; noise is deleted.
+
+Applications can use the polling API instead of running reviewer logic locally:
+
+```bash
+curl -X POST http://127.0.0.1:8000/agent/review/memory \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"matcreator","batch_size":10}'
+
+curl http://127.0.0.1:8000/agent/review/memory/<job-id>
+```
+
 Credentials may also be passed directly with `api_key=` and `base_url=`.
 Use `graph.ask("...", read_only=True)` for a one-shot conversation.
 For async applications, call `await asyncio.to_thread(chat.send, message)`.
