@@ -308,9 +308,10 @@ class KnowDoGraph:
         threshold: int = 20,
         policy: "ReviewPolicy | None" = None,
         strategy: "ReviewStrategy" = "auto",
+        include_existing: bool = False,
         **chat_options: Any,
     ) -> Any:
-        """Schedule a background review after each threshold of newly created nodes."""
+        """Schedule a background review after each threshold of eligible nodes."""
         from .review import AutoReviewScheduler
 
         scheduler = AutoReviewScheduler(
@@ -321,6 +322,9 @@ class KnowDoGraph:
             chat_options=chat_options,
         )
         self._auto_reviewers.append(scheduler)
+        if include_existing:
+            with self._session() as db:
+                scheduler.include_existing(EntryRepository(db).get_all())
         return scheduler
 
     def _session(self) -> Session:
