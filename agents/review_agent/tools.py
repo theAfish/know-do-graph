@@ -15,6 +15,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+def _memory_metadata(entry: Any) -> dict:
+    data = entry.metadata.custom.get("memory", {})
+    return data if isinstance(data, dict) else {}
+
+
 # ---------------------------------------------------------------------------
 # Sampling / overview
 # ---------------------------------------------------------------------------
@@ -97,6 +102,262 @@ def get_graph_summary(graph: Any = None) -> dict:
         "reviewed_nodes": reviewed,
         "unreviewed_nodes": total - reviewed,
         "review_coverage_pct": round(100 * reviewed / total, 1) if total else 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Memory distillation
+# ---------------------------------------------------------------------------
+
+
+def sample_memory_nodes(
+    batch_size: int = 5,
+    session_id: str | None = None,
+    graph: Any = None,
+) -> list[dict]:
+    """Return unpromoted memory nodes, optionally restricted to one session."""
+    from core.schemas.entry import EntryType
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EntryRepository
+
+    with SessionLocal() as db:
+        entries = EntryRepository(db).get_all()
+
+    candidates = []
+    for entry in entries:
+        if entry.entry_type != EntryType.memory:
+            continue
+        memory = _memory_metadata(entry)
+        if memory.get("promoted", False) or memory.get("distillation_status") == "skipped":
+            continue
+        if session_id is not None and memory.get("session_id") != session_id:
+            continue
+        candidates.append(entry)
+
+    candidates.sort(key=lambda entry: entry.metadata.timestamp)
+    return [
+        {
+            "id": entry.id,
+            "session_id": _memory_metadata(entry).get("session_id", "default"),
+            "title": entry.title,
+            "content": entry.content,
+            "tags": entry.tags,
+            "success": _memory_metadata(entry).get("success"),
+            "source_entry_ids": _memory_metadata(entry).get("source_entry_ids", []),
+            "created_at": entry.metadata.timestamp.isoformat(),
+        }
+        for entry in candidates[: max(0, batch_size)]
+    ]
+
+
+def distill_memory(
+    memory_id: str,
+    classification: str,
+    entry_type: str | None = None,
+    title: str | None = None,
+    content: str | None = None,
+    tags: list[str] | None = None,
+    target_id: str | None = None,
+    reason: str = "",
+    graph: Any = None,
+) -> dict:
+    """Apply one reviewed memory decision.
+
+    L1/L2 create unverified capability/procedure nodes. L3/L4 create
+    heuristic/constraint nodes and require an existing L1/L2 target. Noise is
+    deleted. ``skip`` retains the memory for a later review.
+    """
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.edge import Edge, EdgeRelation
+    from core.schemas.entry import (
+        Entry,
+        EntryMetadata,
+        EntryType,
+        RefinementStatus,
+        SkillLevel,
+        VerificationStatus,
+        implied_level,
+    )
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EdgeRepository, EntryRepository
+
+    normalized = classification.upper()
+    if normalized not in {"L1", "L2", "L3", "L4", "NOISE", "SKIP"}:
+        return {"error": f"Unsupported classification: {classification}"}
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        memory = engine.get_entry_by_id(memory_id)
+        if memory is None or memory.entry_type != EntryType.memory:
+            return {"error": f"Memory '{memory_id}' not found."}
+
+        memory_data = _memory_metadata(memory)
+        if memory_data.get("promoted", False):
+            return {"error": f"Memory '{memory_id}' was already distilled."}
+
+        if normalized == "SKIP":
+            memory_data["distillation_status"] = "skipped"
+            memory_data["distillation_reason"] = reason
+            memory.metadata.custom["memory"] = memory_data
+            memory.metadata.review_count += 1
+            memory.metadata.last_reviewed_at = datetime.now(timezone.utc)
+            updated_memory = EntryRepository(db).update(memory)
+            if updated_memory is not None:
+                g.add_entry(updated_memory)
+            return {
+                "memory_id": memory_id,
+                "classification": "skip",
+                "action": "skipped",
+                "reason": reason,
+            }
+
+        entry_repo = EntryRepository(db)
+        edge_repo = EdgeRepository(db)
+
+        if normalized == "NOISE":
+            for edge in EdgeRepository(db).get_all():
+                if edge.source_id == memory_id or edge.target_id == memory_id:
+                    edge_repo.delete(edge.id)
+            entry_repo.delete(memory_id)
+            g.remove_entry(memory_id)
+            return {
+                "memory_id": memory_id,
+                "classification": "noise",
+                "action": "deleted",
+                "reason": reason,
+            }
+
+        level = SkillLevel(normalized)
+        default_type_for_level = {
+            SkillLevel.L1: EntryType.capability,
+            SkillLevel.L2: EntryType.procedure,
+            SkillLevel.L3: EntryType.heuristic,
+            SkillLevel.L4: EntryType.constraint,
+        }
+        allowed_types = {
+            SkillLevel.L1: {EntryType.capability, EntryType.workflow},
+            SkillLevel.L2: {EntryType.procedure},
+            SkillLevel.L3: {EntryType.heuristic},
+            SkillLevel.L4: {EntryType.constraint},
+        }
+        try:
+            distilled_type = (
+                EntryType(entry_type)
+                if entry_type is not None
+                else default_type_for_level[level]
+            )
+        except ValueError:
+            return {"error": f"Unsupported entry_type: {entry_type}"}
+        if distilled_type not in allowed_types[level]:
+            allowed = ", ".join(sorted(item.value for item in allowed_types[level]))
+            return {"error": f"{normalized} entry_type must be one of: {allowed}."}
+        target = None
+        relation = None
+        if level in {SkillLevel.L3, SkillLevel.L4}:
+            if not target_id:
+                return {"error": f"{normalized} memory requires target_id."}
+            target = engine.resolve_identifier(target_id)
+            if target is None:
+                return {"error": f"Target '{target_id}' not found."}
+            if implied_level(target.entry_type, target.metadata.skill_level) not in {
+                SkillLevel.L1,
+                SkillLevel.L2,
+            }:
+                return {"error": "L3/L4 memory must target an existing L1 or L2 node."}
+            relation = (
+                EdgeRelation.heuristic_for
+                if level == SkillLevel.L3
+                else EdgeRelation.constraint_on
+            )
+
+        distilled = Entry(
+            title=(title or memory.title).strip(),
+            content=(content or memory.content).strip(),
+            entry_type=distilled_type,
+            tags=list(dict.fromkeys((tags or []) + memory.tags)),
+            metadata=EntryMetadata(
+                source_provenance=f"memory:{memory_id}",
+                extraction_method="review_agent_memory_distillation",
+                refinement_status=RefinementStatus.raw,
+                verification_status=VerificationStatus.unverified,
+                skill_level=level,
+                applicability={"distillation_reason": reason} if reason else {},
+                custom={
+                    "distilled_from_memory": {
+                        "memory_id": memory_id,
+                        "session_id": memory_data.get("session_id", "default"),
+                    }
+                },
+            ),
+        )
+        saved = entry_repo.create(distilled)
+        g.add_entry(saved)
+
+        created_edges = []
+        source_edge = edge_repo.create(
+            Edge(
+                source_id=memory.id,
+                target_id=saved.id,
+                relation=EdgeRelation.refinement_of,
+                metadata={"source": "review_agent_memory_distillation"},
+            )
+        )
+        g.add_edge(source_edge)
+        created_edges.append(source_edge.id)
+
+        if target is not None and relation is not None:
+            target_edge = edge_repo.create(
+                Edge(
+                    source_id=saved.id,
+                    target_id=target.id,
+                    relation=relation,
+                    metadata={"source": "review_agent_memory_distillation"},
+                )
+            )
+            g.add_edge(target_edge)
+            created_edges.append(target_edge.id)
+
+            if level == SkillLevel.L4:
+                target.metadata.failure_modes = list(
+                    dict.fromkeys(target.metadata.failure_modes + [saved.slug])
+                )
+                updated_target = entry_repo.update(target)
+                if updated_target is not None:
+                    g.add_entry(updated_target)
+
+        memory_data.update(
+            {
+                "promoted": True,
+                "promotion_target_id": saved.id,
+                "distilled_level": normalized,
+                "distillation_status": "completed",
+                "distillation_reason": reason,
+            }
+        )
+        memory.metadata.custom["memory"] = memory_data
+        memory.metadata.review_count += 1
+        memory.metadata.last_reviewed_at = datetime.now(timezone.utc)
+        updated_memory = entry_repo.update(memory)
+        if updated_memory is not None:
+            g.add_entry(updated_memory)
+
+    return {
+        "memory_id": memory_id,
+        "classification": normalized,
+        "action": "promoted" if level in {SkillLevel.L1, SkillLevel.L2} else "linked",
+        "entry": {
+            "id": saved.id,
+            "slug": saved.slug,
+            "title": saved.title,
+            "type": saved.entry_type.value,
+            "skill_level": normalized,
+            "verification_status": saved.metadata.verification_status.value,
+        },
+        "target_id": target.id if target is not None else None,
+        "edge_ids": created_edges,
+        "reason": reason,
     }
 
 
@@ -469,4 +730,91 @@ REVIEW_TOOL_DISPATCH: dict[str, Any] = {
     "merge_entries": merge_entries,
     "create_edge": create_edge,
     "delete_edge": delete_edge,
+}
+
+MEMORY_REVIEW_TOOL_SCHEMAS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "sample_memory_nodes",
+            "description": (
+                "Return only unpromoted memory nodes, optionally restricted to a session. "
+                "Use exactly once at the start of a memory review."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "batch_size": {"type": "integer", "default": 5},
+                    "session_id": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_entries",
+            "description": (
+                "Search existing graph nodes. Use this before linking L3/L4 memory so it "
+                "targets the best existing L1 capability/workflow or L2 procedure."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "default": 10},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "semantic", "keyword"],
+                        "default": "hybrid",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "distill_memory",
+            "description": (
+                "Record the final decision for one memory. L1/L2 create unverified nodes; "
+                "L3/L4 create and link a heuristic/constraint to target_id; noise is deleted; "
+                "skip leaves uncertain memory untouched."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string"},
+                    "classification": {
+                        "type": "string",
+                        "enum": ["L1", "L2", "L3", "L4", "noise", "skip"],
+                    },
+                    "entry_type": {
+                        "type": "string",
+                        "enum": ["capability", "workflow", "procedure", "heuristic", "constraint"],
+                        "description": (
+                            "Optional concrete node type. L1 allows capability/workflow; "
+                            "other levels have one matching type."
+                        ),
+                    },
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "target_id": {
+                        "type": "string",
+                        "description": "Required for L3/L4; existing L1/L2 node id or slug.",
+                    },
+                    "reason": {"type": "string"},
+                },
+                "required": ["memory_id", "classification", "reason"],
+            },
+        },
+    },
+]
+
+MEMORY_REVIEW_TOOL_DISPATCH: dict[str, Any] = {
+    "sample_memory_nodes": sample_memory_nodes,
+    "search_entries": search_entries,
+    "distill_memory": distill_memory,
 }

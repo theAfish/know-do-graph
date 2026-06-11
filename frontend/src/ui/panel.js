@@ -1,11 +1,16 @@
 import { api } from '../api.js';
+import { ENTRY_TYPES } from '../constants.js';
 import { escAttr, escHtml } from '../utils.js';
 import { state, on, emit, EVENTS } from '../state.js';
 import { highlightNode, clearHighlight, panZoomToNode } from '../graph/render.js';
 
+let currentEntry = null;
+
 export function initPanel() {
   const closeBtn = document.getElementById('detail-close');
   closeBtn?.addEventListener('click', closeDetail);
+  document.getElementById('detail-body')?.addEventListener('click', handlePanelClick);
+  document.getElementById('detail-body')?.addEventListener('submit', handleEditSubmit);
 
   on(EVENTS.NODE_SELECTED, openDetail);
   on(EVENTS.NODE_CLEARED, closeDetail);
@@ -43,6 +48,8 @@ export async function openDetail(nodeId) {
     entry = state.allNodes.find((n) => n.id === nodeId);
   }
   if (!entry) return;
+  if (state.selectedId !== nodeId) return;
+  currentEntry = entry;
 
   const panel = document.getElementById('detail');
   const body = document.getElementById('detail-body');
@@ -58,12 +65,16 @@ export async function openDetail(nodeId) {
 export function closeDetail() {
   document.getElementById('detail')?.classList.add('hidden');
   state.selectedId = null;
+  currentEntry = null;
   clearHighlight();
 }
 
 function renderDetailHtml(entry, nodeId) {
   const md = entry.metadata || {};
-  let html = '';
+  let html = `<div class="detail-actions">
+    <button class="panel-btn" type="button" data-action="edit-node">Edit</button>
+    <button class="panel-btn danger" type="button" data-action="delete-node">Delete</button>
+  </div>`;
 
   html += section('Identity', [
     kv('ID', entry.id),
@@ -153,6 +164,149 @@ function renderDetailHtml(entry, nodeId) {
   }
 
   return html;
+}
+
+function handlePanelClick(event) {
+  const action = event.target.closest('[data-action]')?.dataset.action;
+  if (!action || !currentEntry) return;
+
+  if (action === 'edit-node') {
+    renderEditForm(currentEntry);
+  } else if (action === 'cancel-edit') {
+    renderCurrentDetail();
+  } else if (action === 'delete-node') {
+    deleteCurrentNode();
+  }
+}
+
+function renderCurrentDetail() {
+  if (!currentEntry || !state.selectedId) return;
+  document.getElementById('detail-title').textContent = currentEntry.title || state.selectedId;
+  document.getElementById('detail-body').innerHTML =
+    renderDetailHtml(currentEntry, state.selectedId);
+}
+
+function renderEditForm(entry) {
+  const typeOptions = ENTRY_TYPES.map(
+    (type) =>
+      `<option value="${escAttr(type)}"${type === entry.entry_type ? ' selected' : ''}>${escHtml(type)}</option>`
+  ).join('');
+
+  document.getElementById('detail-title').textContent = `Edit ${entry.title}`;
+  document.getElementById('detail-body').innerHTML = `
+    <form id="node-edit-form" class="node-edit-form">
+      <label>
+        <span>Title</span>
+        <input name="title" value="${escAttr(entry.title || '')}" required />
+      </label>
+      <label>
+        <span>Slug</span>
+        <input name="slug" value="${escAttr(entry.slug || '')}" />
+      </label>
+      <label>
+        <span>Type</span>
+        <select name="entry_type">${typeOptions}</select>
+      </label>
+      <label>
+        <span>Tags <small>comma-separated</small></span>
+        <input name="tags" value="${escAttr((entry.tags || []).join(', '))}" />
+      </label>
+      <label>
+        <span>Aliases <small>comma-separated</small></span>
+        <input name="aliases" value="${escAttr((entry.aliases || []).join(', '))}" />
+      </label>
+      <label>
+        <span>Content</span>
+        <textarea name="content" rows="14">${escHtml(entry.content || '')}</textarea>
+      </label>
+      <div id="node-edit-error" class="form-error" role="alert" hidden></div>
+      <div class="form-actions">
+        <button class="panel-btn primary" type="submit">Save changes</button>
+        <button class="panel-btn" type="button" data-action="cancel-edit">Cancel</button>
+      </div>
+    </form>`;
+}
+
+async function handleEditSubmit(event) {
+  if (event.target.id !== 'node-edit-form' || !currentEntry) return;
+  event.preventDefault();
+
+  const form = event.target;
+  const submitBtn = form.querySelector('button[type="submit"]');
+  const errorEl = document.getElementById('node-edit-error');
+  const data = new FormData(form);
+  const splitList = (value) =>
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+  const payload = {
+    ...currentEntry,
+    title: String(data.get('title') || '').trim(),
+    slug: String(data.get('slug') || '').trim(),
+    entry_type: String(data.get('entry_type') || 'generic'),
+    tags: splitList(data.get('tags')),
+    aliases: splitList(data.get('aliases')),
+    content: String(data.get('content') || ''),
+  };
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Saving...';
+  errorEl.hidden = true;
+  try {
+    currentEntry = await api.updateEntry(currentEntry.id, payload);
+    renderCurrentDetail();
+    emit(EVENTS.GRAPH_REFRESH);
+  } catch (error) {
+    errorEl.textContent = `Could not save node: ${error.message}`;
+    errorEl.hidden = false;
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Save changes';
+  }
+}
+
+async function deleteCurrentNode() {
+  if (!currentEntry) return;
+  const entry = currentEntry;
+  const linkCount = state.allEdges.filter((edge) => {
+    const source = edge.source.id || edge.source;
+    const target = edge.target.id || edge.target;
+    return source === entry.id || target === entry.id;
+  }).length;
+  const linkText = `${linkCount} connected link${linkCount === 1 ? '' : 's'}`;
+  if (!window.confirm(`Delete "${entry.title}" and ${linkText}? This cannot be undone.`)) return;
+
+  const deleteBtn = document.querySelector('[data-action="delete-node"]');
+  if (deleteBtn) {
+    deleteBtn.disabled = true;
+    deleteBtn.textContent = 'Deleting...';
+  }
+  try {
+    await api.deleteEntry(entry.id);
+    closeDetail();
+    emit(EVENTS.GRAPH_REFRESH);
+  } catch (error) {
+    if (deleteBtn) {
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = 'Delete';
+    }
+    showPanelError(`Could not delete node: ${error.message}`);
+  }
+}
+
+function showPanelError(message) {
+  const body = document.getElementById('detail-body');
+  const existing = body.querySelector('.panel-error');
+  if (existing) {
+    existing.textContent = message;
+    return;
+  }
+  body.insertAdjacentHTML(
+    'afterbegin',
+    `<div class="panel-error" role="alert">${escHtml(message)}</div>`
+  );
 }
 
 function kv(key, val) {

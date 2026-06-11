@@ -17,7 +17,7 @@ from core.storage.database import create_database_engine, initialize_database
 from core.storage.repository import EdgeRepository, EntryRepository
 
 if TYPE_CHECKING:
-    from .chat import AgentKind, ChatSession, StepCallback
+    from .chat import AgentKind, ChatSession, StatusCallback, StepCallback
 
 
 class KnowDoGraph:
@@ -253,6 +253,7 @@ class KnowDoGraph:
         model: str | None = None,
         read_only: bool = False,
         on_step: "StepCallback | None" = None,
+        on_status: "StatusCallback | None" = None,
         api_key: str | None = None,
         base_url: str | None = None,
         batch_size: int = 5,
@@ -266,6 +267,7 @@ class KnowDoGraph:
             model=model,
             read_only=read_only,
             on_step=on_step,
+            on_status=on_status,
             api_key=api_key,
             base_url=base_url,
             batch_size=batch_size,

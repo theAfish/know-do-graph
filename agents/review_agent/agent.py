@@ -23,8 +23,13 @@ from typing import Any, Callable
 
 from openai import OpenAI
 
+from agents.review_agent.tools import (
+    MEMORY_REVIEW_TOOL_DISPATCH,
+    MEMORY_REVIEW_TOOL_SCHEMAS,
+    REVIEW_TOOL_DISPATCH,
+    REVIEW_TOOL_SCHEMAS,
+)
 from core.graph.graph import KnowDoGraph
-from agents.review_agent.tools import REVIEW_TOOL_DISPATCH, REVIEW_TOOL_SCHEMAS
 
 _DEFAULT_MODEL = "qwen-plus"
 
@@ -70,6 +75,28 @@ in one session.
 Keep changes conservative — prefer targeted fixes over large rewrites.
 """
 
+_MEMORY_REVIEW_PROMPT = """You distil raw operational memory into the Know-Do Graph hierarchy.
+
+Classify every supplied memory exactly once:
+- L1: a reusable high-level capability or workflow.
+- L2: an executable procedure or task decomposition.
+- L3: conditional empirical guidance or a rule of thumb.
+- L4: a failure mode, limitation, warning, or hard constraint.
+- noise: chatter, repetition, transient status, or content with no reusable value.
+- skip: genuinely ambiguous content that needs human context.
+
+For L1/L2, call `distill_memory` with a concise reusable title, cleaned content,
+and the concrete entry_type (L1 capability/workflow; L2 procedure).
+For L3/L4, first call `search_entries` to find the best existing L1/L2 parent, then
+call `distill_memory` with that target. Never invent a target. If no defensible
+target exists, use `skip`.
+For noise, call `distill_memory` with classification `noise`.
+
+Do not turn a one-off task, result, material, filename, or parameter set into an
+overly specific capability. Preserve useful conditions and evidence in L3/L4
+content. After all supplied memories have one decision, provide a brief summary.
+"""
+
 
 class ReviewAgent:
     """LLM-powered agent that reviews and cleans the Know-Do Graph incrementally.
@@ -90,12 +117,14 @@ class ReviewAgent:
         model: str | None = None,
         batch_size: int = 5,
         on_step: Callable[[str, dict], None] | None = None,
+        on_status: Callable[[dict], None] | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
     ) -> None:
         self._graph = graph
         self._batch_size = batch_size
         self._on_step = on_step
+        self._on_status = on_status
         self._model = model or os.environ.get(
             "REVIEW_AGENT_MODEL",
             os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL),
@@ -129,11 +158,104 @@ class ReviewAgent:
         ]
         return self._run_loop(history)
 
+    def run_memory_review(
+        self,
+        *,
+        session_id: str | None = None,
+        instructions: str = "",
+    ) -> dict:
+        """Distil one batch of memory nodes and return structured status/results."""
+        sampled = self._dispatch(
+            "sample_memory_nodes",
+            json.dumps({"batch_size": self._batch_size, "session_id": session_id}),
+            dispatch=MEMORY_REVIEW_TOOL_DISPATCH,
+        )
+        if isinstance(sampled, dict) and sampled.get("error"):
+            status = {
+                "status": "failed",
+                "progress": {"completed": 0, "total": 0, "percent": 0},
+                "results": [],
+                "errors": [sampled["error"]],
+                "summary": "",
+            }
+            self._emit_status(status)
+            return status
+
+        memories = sampled if isinstance(sampled, list) else []
+        status = {
+            "status": "running",
+            "session_id": session_id,
+            "progress": {"completed": 0, "total": len(memories), "percent": 0},
+            "results": [],
+            "errors": [],
+            "summary": "",
+        }
+        self._emit_status(status)
+        if not memories:
+            status["status"] = "completed"
+            status["summary"] = "No unreviewed memory nodes found."
+            self._emit_status(status)
+            return status
+
+        user_msg = (
+            f"Review these {len(memories)} memory nodes:\n"
+            f"{json.dumps(memories, default=str, ensure_ascii=False)}"
+        )
+        if instructions:
+            user_msg += f"\nAdditional instructions: {instructions}"
+        history: list[dict] = [
+            {"role": "system", "content": _MEMORY_REVIEW_PROMPT},
+            {"role": "user", "content": user_msg},
+        ]
+
+        def observe(name: str, result: Any) -> None:
+            if name != "distill_memory":
+                return
+            if isinstance(result, dict) and result.get("error"):
+                status["errors"].append(result["error"])
+            else:
+                status["results"].append(result)
+            completed = len(status["results"])
+            total = status["progress"]["total"]
+            status["progress"] = {
+                "completed": completed,
+                "total": total,
+                "percent": round(100 * completed / total) if total else 100,
+            }
+            self._emit_status(status)
+
+        memory_tools = [
+            schema
+            for schema in MEMORY_REVIEW_TOOL_SCHEMAS
+            if schema["function"]["name"] != "sample_memory_nodes"
+        ]
+        summary = self._run_loop(
+            history,
+            tools=memory_tools,
+            dispatch=MEMORY_REVIEW_TOOL_DISPATCH,
+            observe_result=observe,
+        )
+        status["summary"] = summary
+        if status["progress"]["completed"] < status["progress"]["total"]:
+            status["errors"].append(
+                "Review ended before every sampled memory received a decision."
+            )
+        status["status"] = "completed" if not status["errors"] else "completed_with_errors"
+        self._emit_status(status)
+        return status
+
     # ------------------------------------------------------------------
     # Internal agentic loop
     # ------------------------------------------------------------------
 
-    def _run_loop(self, history: list[dict]) -> str:
+    def _run_loop(
+        self,
+        history: list[dict],
+        *,
+        tools: list[dict] = REVIEW_TOOL_SCHEMAS,
+        dispatch: dict[str, Any] = REVIEW_TOOL_DISPATCH,
+        observe_result: Callable[[str, Any], None] | None = None,
+    ) -> str:
         MAX_ITERATIONS = 30
         for i in range(MAX_ITERATIONS):
             if self._on_step:
@@ -142,7 +264,7 @@ class ReviewAgent:
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=history,
-                tools=REVIEW_TOOL_SCHEMAS,
+                tools=tools,
                 tool_choice="auto",
             )
             message = response.choices[0].message
@@ -160,10 +282,16 @@ class ReviewAgent:
                 if self._on_step:
                     self._on_step("tool_call", {"name": tc.function.name, "args": display_args})
 
-                result = self._dispatch(tc.function.name, tc.function.arguments)
+                result = self._dispatch(
+                    tc.function.name,
+                    tc.function.arguments,
+                    dispatch=dispatch,
+                )
 
                 if self._on_step:
                     self._on_step("tool_result", {"name": tc.function.name, "result": result})
+                if observe_result:
+                    observe_result(tc.function.name, result)
 
                 history.append(
                     {
@@ -175,8 +303,14 @@ class ReviewAgent:
 
         return "Review agent reached maximum iterations without a final answer."
 
-    def _dispatch(self, name: str, arguments_json: str) -> Any:
-        func = REVIEW_TOOL_DISPATCH.get(name)
+    def _dispatch(
+        self,
+        name: str,
+        arguments_json: str,
+        *,
+        dispatch: dict[str, Any] = REVIEW_TOOL_DISPATCH,
+    ) -> Any:
+        func = dispatch.get(name)
         if func is None:
             return {"error": f"Unknown tool: {name}"}
         try:
@@ -188,3 +322,10 @@ class ReviewAgent:
             return func(**kwargs)
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
+
+    def _emit_status(self, status: dict) -> None:
+        snapshot = json.loads(json.dumps(status, default=str))
+        if self._on_status:
+            self._on_status(snapshot)
+        if self._on_step:
+            self._on_step("memory_review_status", snapshot)

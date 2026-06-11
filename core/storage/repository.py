@@ -139,14 +139,35 @@ class EntryRepository:
 
     def delete(self, entry_id: str) -> bool:
         from core.retrieval import vector_store
-        from core.storage.models import EntryModel
+        from core.storage.models import EdgeModel, EntryModel
 
         model = self._db.get(EntryModel, entry_id)
         if not model:
             return False
+        incident_edges = (
+            self._db.query(EdgeModel)
+            .filter(
+                (EdgeModel.source_id == entry_id)
+                | (EdgeModel.target_id == entry_id)
+            )
+            .all()
+        )
+        removed_edges = [
+            {
+                "id": edge.id,
+                "source_id": edge.source_id,
+                "target_id": edge.target_id,
+                "relation": edge.relation,
+            }
+            for edge in incident_edges
+        ]
+        for edge in incident_edges:
+            self._db.delete(edge)
         self._db.delete(model)
         self._db.commit()
         vector_store.delete(self._db, entry_id)
+        for edge in removed_edges:
+            _notify("edge_removed", edge)
         _notify("node_removed", {"id": entry_id})
         return True
 
