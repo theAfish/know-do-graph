@@ -164,8 +164,9 @@ def distill_memory(
     """Apply one reviewed memory decision.
 
     L1/L2 create unverified capability/procedure nodes. L3/L4 create
-    heuristic/constraint nodes and require an existing L1/L2 target. Noise is
-    deleted. ``skip`` retains the memory for a later review.
+    heuristic/constraint nodes and require an existing L1/L2 target. Successful
+    distillation consumes the source memory; noise is deleted. ``skip`` retains
+    the memory for a later review.
     """
     from core import app_state
     from core.retrieval.retrieval import RetrievalEngine
@@ -278,35 +279,17 @@ def distill_memory(
             entry_type=distilled_type,
             tags=list(dict.fromkeys((tags or []) + memory.tags)),
             metadata=EntryMetadata(
-                source_provenance=f"memory:{memory_id}",
                 extraction_method="review_agent_memory_distillation",
                 refinement_status=RefinementStatus.raw,
                 verification_status=VerificationStatus.unverified,
                 skill_level=level,
                 applicability={"distillation_reason": reason} if reason else {},
-                custom={
-                    "distilled_from_memory": {
-                        "memory_id": memory_id,
-                        "session_id": memory_data.get("session_id", "default"),
-                    }
-                },
             ),
         )
         saved = entry_repo.create(distilled)
         g.add_entry(saved)
 
         created_edges = []
-        source_edge = edge_repo.create(
-            Edge(
-                source_id=memory.id,
-                target_id=saved.id,
-                relation=EdgeRelation.refinement_of,
-                metadata={"source": "review_agent_memory_distillation"},
-            )
-        )
-        g.add_edge(source_edge)
-        created_edges.append(source_edge.id)
-
         if target is not None and relation is not None:
             target_edge = edge_repo.create(
                 Edge(
@@ -327,21 +310,8 @@ def distill_memory(
                 if updated_target is not None:
                     g.add_entry(updated_target)
 
-        memory_data.update(
-            {
-                "promoted": True,
-                "promotion_target_id": saved.id,
-                "distilled_level": normalized,
-                "distillation_status": "completed",
-                "distillation_reason": reason,
-            }
-        )
-        memory.metadata.custom["memory"] = memory_data
-        memory.metadata.review_count += 1
-        memory.metadata.last_reviewed_at = datetime.now(timezone.utc)
-        updated_memory = entry_repo.update(memory)
-        if updated_memory is not None:
-            g.add_entry(updated_memory)
+        entry_repo.delete(memory.id)
+        g.remove_entry(memory.id)
 
     return {
         "memory_id": memory_id,
@@ -357,6 +327,7 @@ def distill_memory(
         },
         "target_id": target.id if target is not None else None,
         "edge_ids": created_edges,
+        "source_memory_deleted": True,
         "reason": reason,
     }
 

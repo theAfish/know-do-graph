@@ -150,7 +150,8 @@ with KnowDoGraph("data/my_agent.db") as graph:
 Memory review samples only unpromoted `memory` nodes. It classifies each trace
 as L1/L2/L3/L4, noise, or skip. L1/L2 become unverified capability/procedure
 nodes; L3/L4 become heuristic/constraint nodes linked to an existing L1/L2
-node; noise is deleted.
+node. Successful distillation deletes the raw memory node; noise is also
+deleted.
 
 Applications can use the polling API instead of running reviewer logic locally:
 

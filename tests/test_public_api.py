@@ -184,9 +184,13 @@ class PublicApiTests(unittest.TestCase):
         )
         self.assertEqual(deleted["action"], "deleted")
         self.assertIsNone(self.graph.get(noise_trace.id))
-        refreshed_memory = self.graph.memory("matcreator")
-        self.assertTrue(refreshed_memory.get(l1_trace.id).promoted)
-        self.assertTrue(refreshed_memory.get(l3_trace.id).promoted)
+        self.assertTrue(promoted["source_memory_deleted"])
+        self.assertTrue(linked["source_memory_deleted"])
+        self.assertIsNone(self.graph.get(l1_trace.id))
+        self.assertIsNone(self.graph.get(l3_trace.id))
+        self.assertEqual(self.graph.memory("matcreator").list(), [])
+        self.assertIsNone(promoted_entry.metadata.source_provenance)
+        self.assertNotIn("distilled_from_memory", promoted_entry.metadata.custom)
 
     def test_memory_review_returns_structured_progress(self) -> None:
         from agents.review_agent.agent import ReviewAgent
