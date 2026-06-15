@@ -89,6 +89,97 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(edge.relation, EdgeRelation.related_memory)
         self.assertEqual(memory.edges(trace.id)[0].target_id, follow_up.id)
 
+    def test_attached_counts_and_scoped_search(self) -> None:
+        selected = self.graph.add(
+            "Relax Crystal",
+            content="Relax an atomic crystal structure.",
+            entry_type=EntryType.capability,
+        )
+        other = self.graph.add(
+            "Build Interface",
+            content="Build an atomistic interface.",
+            entry_type=EntryType.capability,
+        )
+        popular = self.graph.add(
+            "Prefer FIRE",
+            content="FIRE handles noisy force convergence.",
+            entry_type=EntryType.heuristic,
+            tags=["optimizer"],
+            metadata=EntryMetadata(usage_count=8),
+        )
+        strain = self.graph.add(
+            "Reduce strain first",
+            content="Reduce lattice strain before relaxation.",
+            entry_type=EntryType.heuristic,
+            tags=["stability"],
+            metadata=EntryMetadata(usage_count=2),
+        )
+        unrelated = self.graph.add(
+            "Interface strain guidance",
+            content="Reduce lattice strain when building an interface.",
+            entry_type=EntryType.heuristic,
+            tags=["stability"],
+        )
+        hard_limit = self.graph.add(
+            "Force threshold limit",
+            content="Do not use loose force thresholds.",
+            entry_type=EntryType.constraint,
+        )
+        warning = self.graph.add(
+            "Unstable cell warning",
+            content="Variable-cell relaxation can become unstable.",
+            entry_type=EntryType.constraint,
+        )
+
+        for sidecar, relation in (
+            (popular, EdgeRelation.heuristic_for),
+            (strain, EdgeRelation.heuristic_for),
+            (hard_limit, EdgeRelation.constraint_on),
+            (warning, EdgeRelation.warning_about),
+        ):
+            self.graph.connect(sidecar.id, selected.id, relation=relation)
+        self.graph.connect(
+            unrelated.id,
+            other.id,
+            relation=EdgeRelation.heuristic_for,
+        )
+
+        self.assertEqual(
+            self.graph.count_attached(selected.slug),
+            {
+                "resolved": True,
+                "anchor_id": selected.id,
+                "heuristics": 2,
+                "constraints": 2,
+            },
+        )
+
+        usage_ranked, total = self.graph.search_attached(
+            selected.id,
+            kind="heuristics",
+            limit=1,
+        )
+        self.assertEqual([entry.id for entry in usage_ranked], [popular.id])
+        self.assertEqual(total, 2)
+
+        filtered, total = self.graph.search_attached(
+            selected.slug,
+            kind="heuristics",
+            query="strain",
+            tags=["stability"],
+            mode="keyword",
+        )
+        self.assertEqual([entry.id for entry in filtered], [strain.id])
+        self.assertEqual(total, 2)
+        self.assertNotIn(unrelated.id, {entry.id for entry in filtered})
+
+        constraints, total = self.graph.search_attached(
+            selected.id,
+            kind="constraints",
+        )
+        self.assertEqual({entry.id for entry in constraints}, {hard_limit.id, warning.id})
+        self.assertEqual(total, 2)
+
     def test_clients_are_isolated_by_database_path(self) -> None:
         other_path = Path(self.temp_dir.name) / "other.db"
         with KnowDoGraph(other_path) as other:
