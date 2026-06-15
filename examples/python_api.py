@@ -17,14 +17,35 @@ def main() -> None:
             content="Attach a calculator and run an ASE optimizer.",
             tags=["atomistic", "execution"],
         )
+        heuristic = graph.add(
+            "Prefer FIRE for noisy forces",
+            entry_type=EntryType.heuristic,
+            content="FIRE is often robust when force convergence is noisy.",
+            tags=["atomistic", "optimizer"],
+        )
         graph.connect(
             capability.id,
             procedure.id,
             relation=EdgeRelation.decomposes_to,
         )
+        graph.connect(
+            heuristic.id,
+            capability.id,
+            relation=EdgeRelation.heuristic_for,
+        )
 
         candidates = graph.plan("relax this crystal")
-        context = graph.expand(capability.slug, stages=["decomposition"])
+        selected = candidates[0]
+        attached = graph.count_attached(selected.id)
+        sidecars = []
+        if attached["heuristics"]:
+            sidecars, total = graph.search_attached(
+                selected.id,
+                kind="heuristics",
+                query="force convergence",
+            )
+            print(f"Showing {len(sidecars)} of {total} attached heuristics")
+
         graph.memory("run-42").add(
             "Relaxation converged with FIRE at fmax=0.03.",
             tags=["success"],
@@ -32,7 +53,7 @@ def main() -> None:
         )
 
         print([entry.title for entry in candidates])
-        print(context)
+        print([entry.title for entry in sidecars])
 
 
 if __name__ == "__main__":

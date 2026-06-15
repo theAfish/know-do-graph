@@ -61,6 +61,16 @@ graph.connect(skill.id, procedure.id, relation=EdgeRelation.decomposes_to)
 planner_context = graph.plan("relax this crystal")
 execution_context = graph.expand(skill.slug, stages=["decomposition"])
 
+selected = planner_context[0]
+attached = graph.count_attached(selected.id)
+if attached["heuristics"]:
+    heuristics, total = graph.search_attached(
+        selected.id,
+        kind="heuristics",
+        query="force convergence",
+        mode="hybrid",
+    )
+
 memory = graph.memory("run-42")
 first = memory.add(
     "FIRE converged at fmax=0.03.",
@@ -73,10 +83,13 @@ graph.close()
 ```
 
 The main methods are `add`, `get`, `list`, `search`, `update`, `delete`,
-`connect`, `related`, `plan`, `heuristics`, `constraints`, `expand`, and
-`memory`. IDs, slugs, and aliases are accepted anywhere an entry identifier is
-required. Each client owns its database engine, so multiple graph databases can
-be used safely in the same process.
+`connect`, `related`, `plan`, `heuristics`, `constraints`, `count_attached`,
+`search_attached`, `expand`, and `memory`. IDs, slugs, and aliases are accepted
+anywhere an entry identifier is required. `count_attached()` and
+`search_attached()` provide embedded clients the same scoped L3/L4 progressive
+retrieval as `GET /remote/entry/{id}`, `/heuristics`, and `/constraints`.
+Each client owns its database engine, so multiple graph databases can be used
+safely in the same process.
 
 ### Python chat API
 
@@ -550,7 +563,9 @@ curl http://<host>:<port>/remote
 | `POST` | `/remote/chat` | Chat with the orchestrator agent (read-only; agents and humans) |
 | `GET` | `/remote/search` | Search entries (`?q=&tags=&entry_type=&limit=`) |
 | `GET` | `/remote/graph` | Graph stats + full node/edge dump |
-| `GET` | `/remote/entry/{id}` | Entry by ID, slug, or alias |
+| `GET` | `/remote/entry/{id}` | Entry by ID, slug, or alias, including attached L3/L4 counts |
+| `GET` | `/remote/entry/{id}/heuristics` | Query-filtered L3 heuristics attached to one entry |
+| `GET` | `/remote/entry/{id}/constraints` | Query-filtered L4 constraints attached to one entry |
 | `GET` | `/remote/entry/{id}/related` | Related entries via BFS (`?depth=1&relation=`) |
 | `POST` | `/remote/feedback` | Free-form feedback trace; optionally also updates an entry's verification (pass `entry_id` + `verdict`) |
 | `POST` | `/entries/{id}/feedback` | Direct per-entry verification feedback |

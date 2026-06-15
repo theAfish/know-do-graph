@@ -244,6 +244,32 @@ class KnowDoGraph:
         with self._session() as db:
             return ProgressiveRetriever(db, self._graph).constraints_for(skill, k=limit)
 
+    def count_attached(self, skill: str) -> dict:
+        """Count L3/L4 nodes directly attached to an L1/L2 entry."""
+        with self._session() as db:
+            return ProgressiveRetriever(db, self._graph).count_attached(skill)
+
+    def search_attached(
+        self,
+        skill: str,
+        *,
+        kind: str,
+        query: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 10,
+        mode: str = "hybrid",
+    ) -> tuple[list[Entry], int]:
+        """Search heuristics or constraints attached to one selected entry."""
+        with self._session() as db:
+            return ProgressiveRetriever(db, self._graph).search_attached(
+                skill=skill,
+                kind=kind,
+                query=query,
+                tags=tags,
+                limit=limit,
+                mode=mode,
+            )
+
     def expand(
         self,
         skill: str,
