@@ -36,6 +36,35 @@ KDG_DB_PATH=./my-data/my-memory.db
 
 Relative `KDG_DB_PATH` values are resolved from the current working directory.
 
+### Optional embeddings
+
+The default install does not include a local embedding model stack, so it will
+not download PyTorch. Search still works through the keyword path; `hybrid` and
+`semantic` retrieval fall back gracefully when no embedding provider is enabled.
+
+To use a local `sentence-transformers` model:
+
+```bash
+pip install "know-do-graph[local-embeddings]"
+export KDG_EMBED_PROVIDER=local
+export KDG_EMBED_MODEL="sentence-transformers/all-MiniLM-L6-v2"  # optional
+```
+
+To use an OpenAI-compatible embeddings API instead:
+
+```bash
+export KDG_EMBED_PROVIDER=openai
+export KDG_EMBED_MODEL="text-embedding-3-small"
+export KDG_EMBED_DIM=384
+export KDG_EMBED_API_KEY="..."                         # or OPENAI_API_KEY
+export KDG_EMBED_BASE_URL="https://example.com/v1"     # optional
+```
+
+`KDG_EMBED_DIM` defaults to `384`, matching the bundled SQLite vector table.
+If your provider does not support choosing dimensions, use a model that returns
+384-dimensional vectors or keyword retrieval will continue to be the reliable
+fallback.
+
 ### Python API
 
 Use the high-level client to embed the graph directly in an agent process:
