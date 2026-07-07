@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -12,13 +12,13 @@ from core.app_state import graph as _graph
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
 from core.schemas.entry import (
+    KNOWN_ASSET_FOLDERS,
     Entry,
     EntryType,
-    KNOWN_ASSET_FOLDERS,
     NodeAsset,
 )
 from core.storage.database import get_db
-from core.storage.repository import EdgeRepository, EntryRepository
+from core.storage.repository import EntryRepository
 
 router = APIRouter()
 
@@ -75,13 +75,18 @@ def create_entry(entry: Entry, db: Session = Depends(get_db)):
     """Create a new entry."""
     saved = EntryRepository(db).create(entry)
     _graph.add_entry(saved)
-    _events.emit("node_added", {
-        "id": saved.id,
-        "title": saved.title,
-        "slug": saved.slug,
-        "entry_type": saved.entry_type.value if hasattr(saved.entry_type, "value") else saved.entry_type,
-        "tags": saved.tags,
-    })
+    _events.emit(
+        "node_added",
+        {
+            "id": saved.id,
+            "title": saved.title,
+            "slug": saved.slug,
+            "entry_type": saved.entry_type.value
+            if hasattr(saved.entry_type, "value")
+            else saved.entry_type,
+            "tags": saved.tags,
+        },
+    )
     return saved.model_dump(mode="json")
 
 
@@ -95,13 +100,18 @@ def update_entry(entry_id: str, entry: Entry, db: Session = Depends(get_db)):
     if not updated:
         raise HTTPException(status_code=404, detail="Entry not found")
     _graph.add_entry(updated)
-    _events.emit("node_updated", {
-        "id": updated.id,
-        "title": updated.title,
-        "slug": updated.slug,
-        "entry_type": updated.entry_type.value if hasattr(updated.entry_type, "value") else updated.entry_type,
-        "tags": updated.tags,
-    })
+    _events.emit(
+        "node_updated",
+        {
+            "id": updated.id,
+            "title": updated.title,
+            "slug": updated.slug,
+            "entry_type": updated.entry_type.value
+            if hasattr(updated.entry_type, "value")
+            else updated.entry_type,
+            "tags": updated.tags,
+        },
+    )
     return updated.model_dump(mode="json")
 
 
@@ -329,9 +339,7 @@ class AssetBody(BaseModel):
 
 
 @router.post("/{entry_id}/assets", status_code=201)
-def add_entry_asset(
-    entry_id: str, body: AssetBody, db: Session = Depends(get_db)
-):
+def add_entry_asset(entry_id: str, body: AssetBody, db: Session = Depends(get_db)):
     """Add or replace an asset on an entry.
 
     If an asset with the same ``folder/filename`` exists it is replaced.
@@ -345,7 +353,8 @@ def add_entry_asset(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     entry.assets = [
-        a for a in entry.assets
+        a
+        for a in entry.assets
         if not (a.folder == new_asset.folder and a.filename == new_asset.filename)
     ]
     entry.assets.append(new_asset)
@@ -357,9 +366,7 @@ def add_entry_asset(
 
 
 @router.delete("/{entry_id}/assets/{folder}/{filename:path}", status_code=204)
-def delete_entry_asset(
-    entry_id: str, folder: str, filename: str, db: Session = Depends(get_db)
-):
+def delete_entry_asset(entry_id: str, folder: str, filename: str, db: Session = Depends(get_db)):
     """Delete a single asset from an entry."""
     engine = RetrievalEngine(db, _graph)
     entry = engine.resolve_identifier(entry_id)
@@ -368,8 +375,7 @@ def delete_entry_asset(
     folder_n = folder.lower()
     before = len(entry.assets)
     entry.assets = [
-        a for a in entry.assets
-        if not (a.folder == folder_n and a.filename == filename)
+        a for a in entry.assets if not (a.folder == folder_n and a.filename == filename)
     ]
     if len(entry.assets) == before:
         raise HTTPException(status_code=404, detail="Asset not found")

@@ -123,10 +123,12 @@ def initialize_database(db_engine: Engine) -> None:
         # Create the sqlite-vec virtual table for entry embeddings (if extension loaded).
         # 384 dims matches sentence-transformers/all-MiniLM-L6-v2 (the default).
         try:
-            conn.execute(text(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS entry_embeddings USING vec0("
-                "entry_id TEXT PRIMARY KEY, embedding FLOAT[384])"
-            ))
+            conn.execute(
+                text(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS entry_embeddings USING vec0("
+                    "entry_id TEXT PRIMARY KEY, embedding FLOAT[384])"
+                )
+            )
             conn.commit()
         except Exception:
             pass  # sqlite-vec not loaded; hybrid retrieval will fall back to keyword

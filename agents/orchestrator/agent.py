@@ -75,7 +75,9 @@ class OrchestratorAgent:
         base_url: str | None = None,
     ) -> None:
         self._graph = graph
-        self._model = model or os.environ.get("ORCHESTRATOR_MODEL", os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL))
+        self._model = model or os.environ.get(
+            "ORCHESTRATOR_MODEL", os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL)
+        )
         self._on_step = on_step
         self._read_only = read_only
         self._api_key = api_key
@@ -128,31 +130,33 @@ class OrchestratorAgent:
             },
         ]
         if not self._read_only:
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": "run_review_agent",
-                    "description": (
-                        "Delegate a quality-review session to the ReviewAgent. "
-                        "Use for auditing, cleaning, deduplicating, or fixing existing nodes."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "instructions": {
-                                "type": "string",
-                                "description": "Specific review focus (leave empty for general review)",
-                                "default": "",
-                            },
-                            "batch_size": {
-                                "type": "integer",
-                                "description": "Number of nodes to review in this session",
-                                "default": 5,
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "run_review_agent",
+                        "description": (
+                            "Delegate a quality-review session to the ReviewAgent. "
+                            "Use for auditing, cleaning, deduplicating, or fixing existing nodes."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "instructions": {
+                                    "type": "string",
+                                    "description": "Specific review focus (leave empty for general review)",
+                                    "default": "",
+                                },
+                                "batch_size": {
+                                    "type": "integer",
+                                    "description": "Number of nodes to review in this session",
+                                    "default": 5,
+                                },
                             },
                         },
                     },
-                },
-            })
+                }
+            )
 
         MAX_ITERATIONS = 8
         for i in range(MAX_ITERATIONS):

@@ -30,6 +30,7 @@ _CHAR_SUBS: dict[str, str] = {
 
 def slug_from_title(title: str) -> str:
     import unicodedata
+
     for sym, replacement in _CHAR_SUBS.items():
         title = title.replace(sym, f" {replacement} ")
     parts: list[str] = []

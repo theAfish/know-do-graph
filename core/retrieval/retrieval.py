@@ -14,7 +14,20 @@ from core.schemas.entry import Entry, EntryType
 from core.storage.models import EdgeModel, EntryModel
 
 _STOP_WORDS = {
-    "a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or", "is", "are", "be",
+    "a",
+    "an",
+    "the",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "and",
+    "or",
+    "is",
+    "are",
+    "be",
 }
 
 # Bidirectional synonym groups — each list is a set of interchangeable terms.
@@ -78,11 +91,7 @@ class RetrievalEngine:
     def get_entry_by_alias(self, alias: str) -> Optional[Entry]:
         """Return the first entry whose aliases list contains *alias* (case-insensitive)."""
         alias_lower = alias.lower()
-        rows = (
-            self._db.query(EntryModel)
-            .filter(EntryModel.aliases.ilike(f"%{alias_lower}%"))
-            .all()
-        )
+        rows = self._db.query(EntryModel).filter(EntryModel.aliases.ilike(f"%{alias_lower}%")).all()
         for row in rows:
             entry = Entry(**row.to_dict())
             if any(a.lower() == alias_lower for a in entry.aliases):
@@ -148,7 +157,9 @@ class RetrievalEngine:
           - No embedder / no vec index → pure keyword path regardless of mode.
         """
         if not query:
-            return [(0.0, e) for e in self._filter_only(tags=tags, entry_type=entry_type, limit=limit)]
+            return [
+                (0.0, e) for e in self._filter_only(tags=tags, entry_type=entry_type, limit=limit)
+            ]
 
         entries_by_id: dict[str, Entry] = {}
 
@@ -240,10 +251,7 @@ class RetrievalEngine:
         if entry_type:
             q = q.filter(EntryModel.entry_type == entry_type.value)
 
-        tokens = [
-            t for t in query.lower().split()
-            if len(t) > 2 and t not in _STOP_WORDS
-        ]
+        tokens = [t for t in query.lower().split() if len(t) > 2 and t not in _STOP_WORDS]
         if not tokens:
             tokens = [query.lower()]
 
@@ -288,9 +296,7 @@ class RetrievalEngine:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [(eid, s) for s, eid in scored[:limit]]
 
-    def _with_entries(
-        self, hits: list[tuple[str, int]]
-    ) -> list[tuple[str, int, Entry]]:
+    def _with_entries(self, hits: list[tuple[str, int]]) -> list[tuple[str, int, Entry]]:
         out: list[tuple[str, int, Entry]] = []
         for eid, score in hits:
             row = self._db.get(EntryModel, eid)
@@ -306,10 +312,7 @@ class RetrievalEngine:
     def get_edges_for_entry(self, entry_id: str) -> list[Edge]:
         rows = (
             self._db.query(EdgeModel)
-            .filter(
-                (EdgeModel.source_id == entry_id)
-                | (EdgeModel.target_id == entry_id)
-            )
+            .filter((EdgeModel.source_id == entry_id) | (EdgeModel.target_id == entry_id))
             .all()
         )
         return [Edge(**row.to_dict()) for row in rows]

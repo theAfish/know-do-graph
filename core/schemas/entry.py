@@ -16,17 +16,18 @@ class RemoteSource(BaseModel):
     The identity of the node (id, slug, title, wikilinks-pointing-at-it) is
     intentionally NOT touched by the sync — only the body is refreshed.
     """
+
     kind: Literal["github", "http"] = "github"
     # Display URL (e.g. https://github.com/owner/repo or https://github.com/owner/repo/blob/ref/path)
     url: str
     # For kind="github": owner/repo and path-in-repo.
     owner: Optional[str] = None
     repo: Optional[str] = None
-    ref: str = "main"          # branch / tag / commit
+    ref: str = "main"  # branch / tag / commit
     path: Optional[str] = None  # e.g. "skills/extractor/SKILL.md"
     # Cache / change-detection
-    content_hash: Optional[str] = None   # sha256 of last-fetched body
-    etag: Optional[str] = None           # GitHub blob sha or HTTP ETag
+    content_hash: Optional[str] = None  # sha256 of last-fetched body
+    etag: Optional[str] = None  # GitHub blob sha or HTTP ETag
     fetched_at: Optional[datetime] = None
     status: Literal["ok", "stale", "error", "never"] = "never"
     last_error: Optional[str] = None
@@ -47,8 +48,8 @@ class EntryType(str, Enum):
     analytical = "analytical"
     memory = "memory"
     # Hierarchical-memory layers (see SkillLevel).
-    heuristic = "heuristic"   # L3: operational experience / empirical guidance
-    constraint = "constraint" # L4: known failure modes / limitations
+    heuristic = "heuristic"  # L3: operational experience / empirical guidance
+    constraint = "constraint"  # L4: known failure modes / limitations
     generic = "generic"
 
 
@@ -65,6 +66,7 @@ class SkillLevel(str, Enum):
     so that, e.g., a ``procedure`` and a ``workflow`` can both be tagged L2,
     and an L3 ``heuristic`` can be attached to either.
     """
+
     L1 = "L1"
     L2 = "L2"
     L3 = "L3"
@@ -82,7 +84,9 @@ DEFAULT_LEVEL_FOR_TYPE: dict[str, SkillLevel] = {
 }
 
 
-def implied_level(entry_type: "EntryType | str | None", explicit: "SkillLevel | None") -> "SkillLevel | None":
+def implied_level(
+    entry_type: "EntryType | str | None", explicit: "SkillLevel | None"
+) -> "SkillLevel | None":
     """Return the effective skill level for an entry.
 
     Prefers an explicit metadata tag; otherwise falls back to the default
@@ -111,6 +115,7 @@ class VerificationStatus(str, Enum):
     bugged       — known broken; needs fix.
     deprecated   — superseded; do not use.
     """
+
     unverified = "unverified"
     self_tested = "self_tested"
     peer_reviewed = "peer_reviewed"
@@ -153,10 +158,11 @@ class EntryMetadata(BaseModel):
     def _default_verification(cls, v):
         # Tolerate legacy rows where verification_status was stored as null.
         return VerificationStatus.unverified if v is None else v
+
     # Script-specific metadata
-    script_language: Optional[str] = None      # e.g. "python", "bash", "julia"
+    script_language: Optional[str] = None  # e.g. "python", "bash", "julia"
     script_requirements: list[str] = Field(default_factory=list)  # pip/conda packages
-    script_filename: Optional[str] = None      # suggested filename for download
+    script_filename: Optional[str] = None  # suggested filename for download
     related_environments: list[str] = Field(default_factory=list)
     runtime_requirements: list[str] = Field(default_factory=list)
     external_refs: list[str] = Field(default_factory=list)
@@ -182,6 +188,7 @@ class ScriptAttachment(BaseModel):
     Kept for backward compatibility — internally these are mirrored into the
     generalised :class:`NodeAsset` list with ``folder="scripts"``.
     """
+
     filename: str
     language: str = "python"
     content: str
@@ -235,10 +242,11 @@ class NodeAsset(BaseModel):
     External agents can address assets as ``[entry-slug]/[folder]/[filename]``
     via ``GET /entries/{id}/assets/{folder}/{filename}``.
     """
+
     folder: str = ASSET_FOLDER_NOTES
     filename: str
     kind: str = "file"  # "file" | "link" | "text"
-    content: str = ""    # body for file/text; URL for link
+    content: str = ""  # body for file/text; URL for link
     language: Optional[str] = None
     mime_type: Optional[str] = None
     description: str = ""
@@ -312,15 +320,17 @@ class Entry(BaseModel):
         """
         if not self.assets and self.scripts:
             for s in self.scripts:
-                self.assets.append(NodeAsset(
-                    folder=ASSET_FOLDER_SCRIPTS,
-                    filename=s.filename,
-                    kind="file",
-                    content=s.content,
-                    language=s.language,
-                    requirements=list(s.requirements),
-                    description=s.description,
-                ))
+                self.assets.append(
+                    NodeAsset(
+                        folder=ASSET_FOLDER_SCRIPTS,
+                        filename=s.filename,
+                        kind="file",
+                        content=s.content,
+                        language=s.language,
+                        requirements=list(s.requirements),
+                        description=s.description,
+                    )
+                )
         # Derived view — always rebuilt from canonical assets.
         self.scripts = [
             ScriptAttachment(
@@ -366,6 +376,7 @@ _CHAR_SUBS: dict[str, str] = {
 
 def _slug_from_title(title: str) -> str:
     import unicodedata
+
     # Pre-substitute scientific symbols that have misleading NFKD decompositions.
     for sym, replacement in _CHAR_SUBS.items():
         title = title.replace(sym, f" {replacement} ")

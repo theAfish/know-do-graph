@@ -94,12 +94,14 @@ def list_linked_entries(db: Session = Depends(get_db)) -> list[dict]:
         src = e.metadata.remote_source
         if src is None:
             continue
-        out.append({
-            "entry_id": e.id,
-            "slug": e.slug,
-            "title": e.title,
-            "remote_source": _source_to_dict(src),
-        })
+        out.append(
+            {
+                "entry_id": e.id,
+                "slug": e.slug,
+                "title": e.title,
+                "remote_source": _source_to_dict(src),
+            }
+        )
     return out
 
 
@@ -139,6 +141,7 @@ async def sync_one_endpoint(
         try:
             from core.storage.repository import EdgeRepository
             from core.sync.autolink import auto_link_entry
+
             al = auto_link_entry(updated, repo.get_all(), EdgeRepository(db))
             autolink_summary = {
                 "frontmatter_edges": al.frontmatter_edges,

@@ -22,6 +22,7 @@ def _notify(event_type: str, data: dict) -> None:
     """
     try:
         from core import events as _events
+
         _events.emit(event_type, data)
     except Exception:
         pass
@@ -32,9 +33,7 @@ def _unique_slug(db: Session, base_slug: str, entry_id: str) -> str:
 
     def _taken(s: str) -> bool:
         return (
-            db.query(EntryModel)
-            .filter(EntryModel.slug == s, EntryModel.id != entry_id)
-            .first()
+            db.query(EntryModel).filter(EntryModel.slug == s, EntryModel.id != entry_id).first()
             is not None
         )
 
@@ -150,10 +149,7 @@ class EntryRepository:
             return False
         incident_edges = (
             self._db.query(EdgeModel)
-            .filter(
-                (EdgeModel.source_id == entry_id)
-                | (EdgeModel.target_id == entry_id)
-            )
+            .filter((EdgeModel.source_id == entry_id) | (EdgeModel.target_id == entry_id))
             .all()
         )
         removed_edges = [
@@ -192,7 +188,9 @@ class EdgeRepository:
         # Skip duplicates (same source/target/relation)
         existing = (
             self._db.query(EdgeModel)
-            .filter_by(source_id=edge.source_id, target_id=edge.target_id, relation=edge.relation.value)
+            .filter_by(
+                source_id=edge.source_id, target_id=edge.target_id, relation=edge.relation.value
+            )
             .first()
         )
         if existing:
@@ -209,12 +207,15 @@ class EdgeRepository:
         )
         self._db.add(model)
         self._db.commit()
-        _notify("edge_added", {
-            "id": edge.id,
-            "source_id": edge.source_id,
-            "target_id": edge.target_id,
-            "relation": edge.relation.value,
-        })
+        _notify(
+            "edge_added",
+            {
+                "id": edge.id,
+                "source_id": edge.source_id,
+                "target_id": edge.target_id,
+                "relation": edge.relation.value,
+            },
+        )
         return edge
 
     def delete(self, edge_id: str) -> bool:
@@ -226,7 +227,9 @@ class EdgeRepository:
         src, tgt, rel = model.source_id, model.target_id, model.relation
         self._db.delete(model)
         self._db.commit()
-        _notify("edge_removed", {"id": edge_id, "source_id": src, "target_id": tgt, "relation": rel})
+        _notify(
+            "edge_removed", {"id": edge_id, "source_id": src, "target_id": tgt, "relation": rel}
+        )
         return True
 
     def get_all(self) -> list[Edge]:
@@ -250,6 +253,7 @@ _CHAR_SUBS: dict[str, str] = {
 
 def _slug(title: str) -> str:
     import unicodedata
+
     for sym, replacement in _CHAR_SUBS.items():
         title = title.replace(sym, f" {replacement} ")
     parts: list[str] = []

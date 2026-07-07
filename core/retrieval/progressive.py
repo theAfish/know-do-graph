@@ -30,7 +30,6 @@ from core.graph.graph import KnowDoGraph
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
 from core.schemas.entry import (
-    DEFAULT_LEVEL_FOR_TYPE,
     Entry,
     EntryType,
     SkillLevel,
@@ -156,13 +155,17 @@ class ProgressiveRetriever:
                 "id": anchor.id,
                 "slug": anchor.slug,
                 "title": anchor.title,
-                "level": (implied_level(anchor.entry_type, anchor.metadata.skill_level) or SkillLevel.L1).value,
+                "level": (
+                    implied_level(anchor.entry_type, anchor.metadata.skill_level) or SkillLevel.L1
+                ).value,
             },
         }
         if "heuristics" in stages:
             bundle["heuristics"] = [self._summarize(e) for e in self.heuristics_for(anchor.id, k=k)]
         if "constraints" in stages:
-            bundle["constraints"] = [self._summarize(e) for e in self.constraints_for(anchor.id, k=k)]
+            bundle["constraints"] = [
+                self._summarize(e) for e in self.constraints_for(anchor.id, k=k)
+            ]
         if "decomposition" in stages:
             bundle["decomposition"] = [
                 self._summarize(e) for e in self._decomposition_for(anchor.id, k=k * 2)
@@ -232,7 +235,10 @@ class ProgressiveRetriever:
         seen: set[str] = set()
         for edge in (
             self._db.query(EdgeModel)
-            .filter(EdgeModel.source_id == skill_id, EdgeModel.relation == EdgeRelation.decomposes_to.value)
+            .filter(
+                EdgeModel.source_id == skill_id,
+                EdgeModel.relation == EdgeRelation.decomposes_to.value,
+            )
             .limit(k * 4)
             .all()
         ):
@@ -348,15 +354,11 @@ class ProgressiveRetriever:
         # No query → return a usage-ranked slice of the scope. Cheap path
         # that never loads the whole scope when it's large.
         if not query:
-            rows = (
-                self._db.query(EntryModel)
-                .filter(EntryModel.id.in_(scope_ids))
-                .all()
-            )
+            rows = self._db.query(EntryModel).filter(EntryModel.id.in_(scope_ids)).all()
             entries = [Entry(**r.to_dict()) for r in rows]
             entries = self._filter_by_tags(entries, tags)
             entries.sort(
-                key=lambda e: (e.metadata.usage_count or 0),
+                key=lambda e: e.metadata.usage_count or 0,
                 reverse=True,
             )
             return entries[:limit], total
@@ -379,7 +381,6 @@ class ProgressiveRetriever:
             return entries
         wanted = {t.lower() for t in tags}
         return [e for e in entries if any(t.lower() in wanted for t in (e.tags or []))]
-
 
     @staticmethod
     def _summarize(entry: Entry) -> dict:

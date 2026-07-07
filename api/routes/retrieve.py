@@ -52,22 +52,32 @@ def plan(
 def heuristics(
     skill: str = Query(..., description="Entry id, slug, or alias of the L1/L2 skill"),
     k: int = Query(5, ge=1, le=50),
-    fallback: bool = Query(True, description="Include semantic-search L3 fallback if no edges exist"),
+    fallback: bool = Query(
+        True, description="Include semantic-search L3 fallback if no edges exist"
+    ),
     retriever: ProgressiveRetriever = Depends(_retriever),
 ):
     """Return L3 heuristics attached to a skill."""
-    return [_annotate(e) for e in retriever.heuristics_for(skill, k=k, include_semantic_fallback=fallback)]
+    return [
+        _annotate(e)
+        for e in retriever.heuristics_for(skill, k=k, include_semantic_fallback=fallback)
+    ]
 
 
 @router.get("/constraints", response_model=list[dict])
 def constraints(
     skill: str = Query(..., description="Entry id, slug, or alias of the L1/L2 skill"),
     k: int = Query(5, ge=1, le=50),
-    fallback: bool = Query(True, description="Include semantic-search L4 fallback if no edges exist"),
+    fallback: bool = Query(
+        True, description="Include semantic-search L4 fallback if no edges exist"
+    ),
     retriever: ProgressiveRetriever = Depends(_retriever),
 ):
     """Return L4 constraints / failure modes attached to a skill."""
-    return [_annotate(e) for e in retriever.constraints_for(skill, k=k, include_semantic_fallback=fallback)]
+    return [
+        _annotate(e)
+        for e in retriever.constraints_for(skill, k=k, include_semantic_fallback=fallback)
+    ]
 
 
 @router.get("/expand/{skill}", response_model=dict)

@@ -21,7 +21,6 @@ from typing import Optional
 
 from core.extraction.wikilink_parser import (
     extract_external_refs,
-    parse_wikilinks,
     slug_from_title,
 )
 from core.graph.graph import KnowDoGraph
@@ -83,15 +82,8 @@ class ExtractionAgent:
     ) -> list[Entry]:
         """Extract entries from all text files in *directory*."""
         glob = directory.rglob("*") if recursive else directory.glob("*")
-        files = [
-            f
-            for f in glob
-            if f.is_file() and f.suffix.lower() in _TEXT_EXTENSIONS
-        ]
-        return [
-            self.extract_from_file(f, entry_type=entry_type, tags=tags)
-            for f in files
-        ]
+        files = [f for f in glob if f.is_file() and f.suffix.lower() in _TEXT_EXTENSIONS]
+        return [self.extract_from_file(f, entry_type=entry_type, tags=tags) for f in files]
 
     def extract_from_text(
         self,

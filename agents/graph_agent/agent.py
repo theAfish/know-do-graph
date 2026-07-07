@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from openai import OpenAI
 
+from agents.graph_agent.tools import TOOL_DISPATCH, TOOL_SCHEMAS
 from core import events as _events
 from core.graph.graph import KnowDoGraph
-from agents.graph_agent.tools import TOOL_DISPATCH, TOOL_SCHEMAS
 
 _DEFAULT_MODEL = "qwen-plus"
 
@@ -322,7 +322,11 @@ class GraphAgent:
             # Execute each tool call and collect results
             for tc in message.tool_calls:
                 try:
-                    display_args = {k: v for k, v in json.loads(tc.function.arguments or "{}").items() if k != "graph"}
+                    display_args = {
+                        k: v
+                        for k, v in json.loads(tc.function.arguments or "{}").items()
+                        if k != "graph"
+                    }
                 except Exception:
                     display_args = {}
                 if self._on_step:

@@ -372,9 +372,7 @@ class PublicApiTests(unittest.TestCase):
             self.graph.add("Excluded memory", entry_type=EntryType.memory)
             self.graph.add(
                 "Protected node",
-                metadata=EntryMetadata(
-                    verification_status=VerificationStatus.peer_reviewed
-                ),
+                metadata=EntryMetadata(verification_status=VerificationStatus.peer_reviewed),
             )
             scheduler.notify_node_created(self.graph.get(reviewed.id))
 
@@ -404,9 +402,7 @@ class PublicApiTests(unittest.TestCase):
     def test_auto_review_existing_backlog_respects_policy(self) -> None:
         self.graph.add("Existing memory", entry_type=EntryType.memory)
         protected = self.graph.add("Existing protected node")
-        self.graph.set_verification_status(
-            protected.id, VerificationStatus.peer_reviewed
-        )
+        self.graph.set_verification_status(protected.id, VerificationStatus.peer_reviewed)
         self.graph.add("Existing eligible node")
         policy = ReviewPolicy(
             exclude_types={EntryType.memory},

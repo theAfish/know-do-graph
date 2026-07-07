@@ -152,9 +152,8 @@ class ReviewAgent:
 
     def run_review(self, instructions: str = "") -> str:
         """Run one review session and return a summary of findings and fixes."""
-        user_msg = (
-            f"Please review a batch of {self._batch_size} nodes. "
-            + (instructions if instructions else "Apply all quality criteria from your instructions.")
+        user_msg = f"Please review a batch of {self._batch_size} nodes. " + (
+            instructions if instructions else "Apply all quality criteria from your instructions."
         )
         history: list[dict] = [
             {"role": "system", "content": self._policy_prompt()},
@@ -335,9 +334,7 @@ class ReviewAgent:
         )
         status["summary"] = summary
         if status["progress"]["completed"] < status["progress"]["total"]:
-            status["errors"].append(
-                "Review ended before every sampled memory received a decision."
-            )
+            status["errors"].append("Review ended before every sampled memory received a decision.")
         status["status"] = "completed" if not status["errors"] else "completed_with_errors"
         self._emit_status(status)
         return status
@@ -374,7 +371,11 @@ class ReviewAgent:
 
             for tc in message.tool_calls:
                 try:
-                    display_args = {k: v for k, v in json.loads(tc.function.arguments or "{}").items() if k != "graph"}
+                    display_args = {
+                        k: v
+                        for k, v in json.loads(tc.function.arguments or "{}").items()
+                        if k != "graph"
+                    }
                 except Exception:
                     display_args = {}
                 if self._on_step:

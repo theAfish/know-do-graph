@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
@@ -48,10 +48,7 @@ def get_subgraph(entry_id: str, depth: int = 2) -> dict:
     sg = _graph.get_subgraph(entry_id, depth=depth)
     return {
         "nodes": [{"id": n, **d} for n, d in sg.nodes(data=True)],
-        "edges": [
-            {"source": u, "target": v, **d}
-            for u, v, d in sg.edges(data=True)
-        ],
+        "edges": [{"source": u, "target": v, **d} for u, v, d in sg.edges(data=True)],
     }
 
 
@@ -62,10 +59,7 @@ def get_full_graph() -> dict:
     return {
         "metadata": dict(g.graph),
         "nodes": [{"id": n, **d} for n, d in g.nodes(data=True)],
-        "edges": [
-            {"source": u, "target": v, **d}
-            for u, v, d in g.edges(data=True)
-        ],
+        "edges": [{"source": u, "target": v, **d} for u, v, d in g.edges(data=True)],
     }
 
 

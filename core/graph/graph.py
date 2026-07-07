@@ -30,9 +30,7 @@ class KnowDoGraph:
     def add_entry(self, entry: Entry) -> None:
         md = entry.metadata
         existed = self._g.has_node(entry.id)
-        was_unreviewed = (
-            existed and self._g.nodes[entry.id].get("review_count", 0) == 0
-        )
+        was_unreviewed = existed and self._g.nodes[entry.id].get("review_count", 0) == 0
         is_unreviewed = md.review_count == 0
         if not existed and is_unreviewed:
             self._g.graph["unreviewed_nodes"] += 1
@@ -129,23 +127,27 @@ class KnowDoGraph:
             for nbr in self._g.successors(entry_id):
                 data = dict(self._g.edges[entry_id, nbr])
                 if _matches(data):
-                    neighbors.append({
-                        **data,
-                        "edge_id": data.get("id"),
-                        "id": nbr,
-                        "direction": "out",
-                    })
+                    neighbors.append(
+                        {
+                            **data,
+                            "edge_id": data.get("id"),
+                            "id": nbr,
+                            "direction": "out",
+                        }
+                    )
 
         if direction in ("in", "both"):
             for nbr in self._g.predecessors(entry_id):
                 data = dict(self._g.edges[nbr, entry_id])
                 if _matches(data):
-                    neighbors.append({
-                        **data,
-                        "edge_id": data.get("id"),
-                        "id": nbr,
-                        "direction": "in",
-                    })
+                    neighbors.append(
+                        {
+                            **data,
+                            "edge_id": data.get("id"),
+                            "id": nbr,
+                            "direction": "in",
+                        }
+                    )
 
         return neighbors
 
@@ -191,13 +193,9 @@ class KnowDoGraph:
             nodes.update(frontier)
         return self._g.subgraph(nodes).copy()
 
-    def find_paths(
-        self, source_id: str, target_id: str, cutoff: int = 6
-    ) -> list[list[str]]:
+    def find_paths(self, source_id: str, target_id: str, cutoff: int = 6) -> list[list[str]]:
         try:
-            return list(
-                nx.all_simple_paths(self._g, source_id, target_id, cutoff=cutoff)
-            )
+            return list(nx.all_simple_paths(self._g, source_id, target_id, cutoff=cutoff))
         except (nx.NodeNotFound, nx.NetworkXNoPath):
             return []
 

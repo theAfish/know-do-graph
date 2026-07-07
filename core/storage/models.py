@@ -17,13 +17,15 @@ class EntryModel(Base):
     slug = Column(String, nullable=False, index=True, unique=True)
     entry_type = Column(String, nullable=False, default="generic")
     content = Column(Text, default="")
-    tags = Column(Text, default="[]")           # JSON list
-    aliases = Column(Text, default="[]")        # JSON list
+    tags = Column(Text, default="[]")  # JSON list
+    aliases = Column(Text, default="[]")  # JSON list
     metadata_json = Column(Text, default="{}")  # JSON object
     internal_refs = Column(Text, default="[]")  # JSON list
-    scripts_json = Column(Text, default="[]")   # JSON list of ScriptAttachment dicts (legacy)
-    assets_json = Column(Text, default="[]")    # JSON list of NodeAsset dicts (folder-organised)
-    embedding_hash = Column(String, nullable=True)  # sha1 of last-embedded text; null = needs embedding
+    scripts_json = Column(Text, default="[]")  # JSON list of ScriptAttachment dicts (legacy)
+    assets_json = Column(Text, default="[]")  # JSON list of NodeAsset dicts (folder-organised)
+    embedding_hash = Column(
+        String, nullable=True
+    )  # sha1 of last-embedded text; null = needs embedding
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
 

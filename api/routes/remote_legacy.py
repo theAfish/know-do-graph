@@ -247,22 +247,24 @@ class SubmitRequest(BaseModel):
 
     At least one of ``content`` or ``messages`` must be provided.
     """
-    session_id: Optional[str] = None   # groups submissions; auto-generated if omitted
-    title: Optional[str] = None        # short label for what this submission is about
-    content: Optional[str] = None      # plain-text content or summary
+
+    session_id: Optional[str] = None  # groups submissions; auto-generated if omitted
+    title: Optional[str] = None  # short label for what this submission is about
+    content: Optional[str] = None  # plain-text content or summary
     # Structured message arrays — supply one of these *instead of* content when
     # you have a conversation transcript.
     messages: Optional[list[dict]] = None  # OpenAI / AutoGen format messages list
-    format: str = "text"               # "text" | "openai" | "autogen"
+    format: str = "text"  # "text" | "openai" | "autogen"
     tags: list[str] = []
-    agent_id: Optional[str] = None     # identifies the submitting agent
+    agent_id: Optional[str] = None  # identifies the submitting agent
 
 
 class DistillRequest(BaseModel):
     """Payload for POST /remote/distill."""
-    session_id: Optional[str] = None   # if given, distil only that session's inbox
-    model: Optional[str] = None        # LLM model override for the distillation agent
-    dry_run: bool = False              # if True, return the prompt without running the agent
+
+    session_id: Optional[str] = None  # if given, distil only that session's inbox
+    model: Optional[str] = None  # LLM model override for the distillation agent
+    dry_run: bool = False  # if True, return the prompt without running the agent
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -420,7 +422,9 @@ def _summarize_entry(entry, snippet_words: int = 40) -> dict:
         "id": str(entry.id),
         "title": entry.title,
         "slug": entry.slug,
-        "entry_type": entry.entry_type.value if hasattr(entry.entry_type, "value") else entry.entry_type,
+        "entry_type": entry.entry_type.value
+        if hasattr(entry.entry_type, "value")
+        else entry.entry_type,
         "tags": list(entry.tags or []),
         "aliases": list(getattr(entry, "aliases", []) or []),
         "snippet": snippet,
@@ -657,7 +661,7 @@ def remote_clear_session(session_id: str) -> None:
 
 # ── Inbox / distillation ──────────────────────────────────────────────────────
 
-_INBOX_SESSION = "inbox"   # MemGraph session used for all submit() entries
+_INBOX_SESSION = "inbox"  # MemGraph session used for all submit() entries
 _INBOX_TAG = "pending-distillation"
 
 
@@ -682,6 +686,7 @@ def remote_submit(body: SubmitRequest) -> dict:
     """
     if not body.content and not body.messages:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=422, detail="Provide 'content' or 'messages'.")
 
     session_id = body.session_id or _INBOX_SESSION
@@ -693,9 +698,13 @@ def remote_submit(body: SubmitRequest) -> dict:
 
     if body.format in ("openai", "autogen") and body.messages:
         if body.format == "openai":
-            entries = mem.ingest_openai_messages(body.messages, tags=extra_tags, as_single_trace=True)
+            entries = mem.ingest_openai_messages(
+                body.messages, tags=extra_tags, as_single_trace=True
+            )
         else:
-            entries = mem.ingest_autogen_messages(body.messages, tags=extra_tags, as_single_trace=True)
+            entries = mem.ingest_autogen_messages(
+                body.messages, tags=extra_tags, as_single_trace=True
+            )
         # Prepend a title line if given
         if body.title and entries:
             entries[0].content = f"# {body.title}\n\n{entries[0].content}"
@@ -729,15 +738,17 @@ def remote_inbox(session_id: Optional[str] = None, limit: int = 50) -> list[dict
         mem = MemGraph(session_id=sid)
         for e in mem.list():
             if _INBOX_TAG in e.tags and not e.promoted:
-                results.append({
-                    "id": e.id,
-                    "session_id": e.session_id,
-                    "title": (e.content.splitlines()[0].lstrip("# ") if e.content else ""),
-                    "preview": e.content[:300] if e.content else "",
-                    "tags": e.tags,
-                    "created_at": e.created_at.isoformat(),
-                    "source_format": e.source_format,
-                })
+                results.append(
+                    {
+                        "id": e.id,
+                        "session_id": e.session_id,
+                        "title": (e.content.splitlines()[0].lstrip("# ") if e.content else ""),
+                        "preview": e.content[:300] if e.content else "",
+                        "tags": e.tags,
+                        "created_at": e.created_at.isoformat(),
+                        "source_format": e.source_format,
+                    }
+                )
     results.sort(key=lambda x: x["created_at"])
     return results[:limit]
 
@@ -763,8 +774,10 @@ def remote_distill(body: DistillRequest) -> dict:
     Set ``dry_run=true`` to preview the distillation prompt without executing it.
     """
     import os
+
     if not os.environ.get("OPENAI_API_KEY"):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured.")
 
     sessions = [body.session_id] if body.session_id else MemGraph.list_sessions()
@@ -793,14 +806,14 @@ def remote_distill(body: DistillRequest) -> dict:
         "properly structured nodes. Follow the abstraction rules: create generic "
         "nodes, not overly-specific instances. Skip anything that is conversational "
         "filler or not worth a standalone node. After processing, briefly list what "
-        "was created.\n\n"
-        + combined
+        "was created.\n\n" + combined
     )
 
     if body.dry_run:
         return {"dry_run": True, "pending_count": len(pending), "prompt": prompt}
 
     from agents.graph_agent.agent import GraphAgent
+
     agent = GraphAgent(graph=_graph, model=body.model)
     response = agent.chat(prompt)
 
@@ -812,4 +825,3 @@ def remote_distill(body: DistillRequest) -> dict:
         "distilled": len(pending),
         "response": response,
     }
-

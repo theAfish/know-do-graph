@@ -304,7 +304,9 @@ async def sync_all_due(*, force: bool = False, autolink: bool = True) -> list[Sy
                         if al.total:
                             logger.info(
                                 "autolink %s: +%d frontmatter, +%d mention edges",
-                                updated.slug, al.frontmatter_edges, al.mention_edges,
+                                updated.slug,
+                                al.frontmatter_edges,
+                                al.mention_edges,
                             )
                     except Exception:  # pragma: no cover
                         logger.exception("autolink failed for %s", updated.slug)
@@ -332,7 +334,9 @@ async def run_periodic_sync(interval_seconds: int) -> None:
             if results:
                 logger.info(
                     "remote_sync tick: %d checked, %d updated, %d errors",
-                    len(results), len(updated), len(errors),
+                    len(results),
+                    len(updated),
+                    len(errors),
                 )
         except asyncio.CancelledError:
             logger.info("remote_sync loop cancelled")

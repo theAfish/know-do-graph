@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
 
 from sqlalchemy import text
 
@@ -46,7 +45,9 @@ def reload_graph_from_db(graph) -> tuple[int, int]:
         entries = entry_repo.get_all()
         entry_ids = {e.id for e in entries}
         all_edges = edge_repo.get_all()
-        dangling = [e for e in all_edges if e.source_id not in entry_ids or e.target_id not in entry_ids]
+        dangling = [
+            e for e in all_edges if e.source_id not in entry_ids or e.target_id not in entry_ids
+        ]
         if dangling:
             for e in dangling:
                 edge_repo.delete(e.id)
@@ -71,7 +72,9 @@ async def run_db_watcher(graph, interval_seconds: int) -> None:
             with SessionLocal() as db:
                 current = _fingerprint(db)
             if current != last:
-                logger.info("db change detected (%s \u2192 %s) \u2014 reloading graph", last, current)
+                logger.info(
+                    "db change detected (%s \u2192 %s) \u2014 reloading graph", last, current
+                )
                 nodes, edges = reload_graph_from_db(graph)
                 _events.emit(
                     "graph_changed",

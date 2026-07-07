@@ -118,15 +118,13 @@ class OpenAIEmbedder:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
     ) -> None:
-        self.model_name = model_name or os.environ.get(
-            "KDG_EMBED_MODEL", "text-embedding-3-small"
-        )
+        self.model_name = model_name or os.environ.get("KDG_EMBED_MODEL", "text-embedding-3-small")
         self.dimensions = dimensions or _optional_int(os.environ.get("KDG_EMBED_DIM")) or 384
-        self.api_key = api_key or os.environ.get("KDG_EMBED_API_KEY") or os.environ.get(
-            "OPENAI_API_KEY"
+        self.api_key = (
+            api_key or os.environ.get("KDG_EMBED_API_KEY") or os.environ.get("OPENAI_API_KEY")
         )
-        self.base_url = base_url or os.environ.get("KDG_EMBED_BASE_URL") or os.environ.get(
-            "OPENAI_API_BASE"
+        self.base_url = (
+            base_url or os.environ.get("KDG_EMBED_BASE_URL") or os.environ.get("OPENAI_API_BASE")
         )
         self._client = None
         self.available = True
@@ -222,9 +220,7 @@ def get_default_embedder() -> Embedder:
         elif provider in {"openai", "api", "remote"}:
             candidate = OpenAIEmbedder()
         else:
-            logger.warning(
-                "Unknown KDG_EMBED_PROVIDER=%r; hybrid retrieval disabled.", provider
-            )
+            logger.warning("Unknown KDG_EMBED_PROVIDER=%r; hybrid retrieval disabled.", provider)
             _default = _NullEmbedder()
             return _default
         # Trigger load eagerly so we know whether it works; downgrade to null if not.
