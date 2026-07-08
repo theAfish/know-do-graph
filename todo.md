@@ -111,13 +111,21 @@ route shapes plus REST, public client, and CLI lifecycle compatibility.
 
 ## Priority 6 - Improve Agent Tooling Architecture
 
-- [ ] Introduce a tool registry abstraction instead of building large module-level dispatch dictionaries by hand.
-- [ ] Separate tool implementation from OpenAI function/tool schema definitions.
-- [ ] Add unit tests for each mutating tool with an isolated temporary database.
-- [ ] Add read-only enforcement tests for `GraphAgent` to ensure mutating tools cannot be called in read-only mode.
-- [ ] Add policy enforcement tests for `ReviewAgent` protected statuses, excluded types, and allowed actions.
-- [ ] Normalize agent tool return shapes so callers can reliably inspect success, errors, IDs, and changed fields.
-- [ ] Move network-capable tools such as `fetch_url` and `web_search` behind an explicit capability/config flag.
+- [x] Introduce a tool registry abstraction instead of building large module-level dispatch dictionaries by hand.
+- [x] Separate tool implementation from OpenAI function/tool schema definitions.
+- [x] Add unit tests for each mutating tool with an isolated temporary database.
+- [x] Add read-only enforcement tests for `GraphAgent` to ensure mutating tools cannot be called in read-only mode.
+- [x] Add policy enforcement tests for `ReviewAgent` protected statuses, excluded types, and allowed actions.
+- [x] Normalize agent tool return shapes so callers can reliably inspect success, errors, IDs, and changed fields.
+- [x] Move network-capable tools such as `fetch_url` and `web_search` behind an explicit capability/config flag.
+
+Implementation note: shared agent tooling now lives in `agents/tooling.py`.
+Graph and review agents expose `ToolRegistry` instances from their respective
+`tools/registry.py` modules, use normalized `ok`/`error` result envelopes for
+dict-shaped tool calls, and hide `fetch_url`/`web_search` unless
+`KDG_ENABLE_NETWORK_TOOLS=1` is set. `tests/test_agent_tooling.py` covers all
+graph mutating tools against temporary databases plus read-only and review
+policy enforcement paths.
 
 ## Priority 7 - Frontend Standardization
 
