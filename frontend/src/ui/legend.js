@@ -1,23 +1,22 @@
 import {
+  COLOR_MODES,
+  LEVEL_COLORS,
   PUBLIC_TYPE_COLORS,
   VERIFICATION_COLORS,
-  LEVEL_COLORS,
-  COLOR_MODES,
 } from '../constants.js';
-import { state, on, EVENTS } from '../state.js';
+import { byId } from '../dom.js';
+import { EVENTS, on, state } from '../state.js';
 
 export function initLegend() {
   renderLegend();
   on(EVENTS.COLOR_MODE_CHANGED, renderLegend);
-  on(EVENTS.SCORE_MODE_CHANGED, renderLegend); // compat
+  on(EVENTS.SCORE_MODE_CHANGED, renderLegend);
   on(EVENTS.FILTERS_CHANGED, renderLegend);
   on(EVENTS.GRAPH_LOADED, renderLegend);
 }
 
 function renderLegend() {
-  const el = document.getElementById('legend');
-  if (!el) return;
-
+  const el = byId('legend');
   const mode = state.colorMode || 'type';
   const cfg = COLOR_MODES.find((m) => m.value === mode) || COLOR_MODES[0];
 
@@ -46,10 +45,10 @@ function renderRamp(el, cfg, mode) {
       <svg class="score-ramp-svg" width="160" height="14">
         <defs>
           <linearGradient id="ramp-grad" x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0%"   stop-color="#180f3e"/>
-            <stop offset="28%"  stop-color="#6a2089"/>
-            <stop offset="56%"  stop-color="#c84b6a"/>
-            <stop offset="78%"  stop-color="#f57c3b"/>
+            <stop offset="0%" stop-color="#180f3e"/>
+            <stop offset="28%" stop-color="#6a2089"/>
+            <stop offset="56%" stop-color="#c84b6a"/>
+            <stop offset="78%" stop-color="#f57c3b"/>
             <stop offset="100%" stop-color="#fde724"/>
           </linearGradient>
         </defs>
@@ -68,24 +67,20 @@ function rampBounds(mode) {
     const ts = nodes
       .map((n) => n.timestamp && +new Date(n.timestamp))
       .filter((v) => v && !Number.isNaN(v));
-    if (!ts.length) return { low: '—', high: '—' };
+    if (!ts.length) return { low: '-', high: '-' };
     return {
       low: new Date(Math.min(...ts)).toISOString().slice(0, 10),
       high: new Date(Math.max(...ts)).toISOString().slice(0, 10),
     };
   }
   if (mode === 'usage_count') {
-    const vs = nodes
-      .filter((n) => typeof n.usage_count === 'number')
-      .map((n) => n.usage_count);
-    if (!vs.length) return { low: '—', high: '—' };
+    const vs = nodes.filter((n) => typeof n.usage_count === 'number').map((n) => n.usage_count);
+    if (!vs.length) return { low: '-', high: '-' };
     return { low: String(Math.min(...vs)), high: String(Math.max(...vs)) };
   }
   if (mode === 'trust_score') {
-    const vs = nodes
-      .filter((n) => typeof n.trust_score === 'number')
-      .map((n) => n.trust_score);
-    if (!vs.length) return { low: '—', high: '—' };
+    const vs = nodes.filter((n) => typeof n.trust_score === 'number').map((n) => n.trust_score);
+    if (!vs.length) return { low: '-', high: '-' };
     return { low: Math.min(...vs).toFixed(2), high: Math.max(...vs).toFixed(2) };
   }
   return { low: 'low', high: 'high' };

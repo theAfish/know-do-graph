@@ -1,41 +1,20 @@
 import { api } from '../../api.js';
 import { ENTRY_TYPES, VERIFICATION_COLORS } from '../../constants.js';
-import { highlightNode, clearHighlight, panZoomToNode } from '../../graph/render.js';
-import { state, on, emit, EVENTS } from '../../state.js';
+import { clearHighlight, highlightNode, panZoomToNode } from '../../graph/render.js';
+import { byId, queryRequired } from '../../dom.js';
+import { emit, EVENTS, on, state } from '../../state.js';
 import { escAttr, escHtml } from '../../utils.js';
 
+/** @type {import('../../types.js').GraphNode|null} */
 let currentEntry = null;
 
 export function initPanel() {
-  const closeBtn = document.getElementById('detail-close');
-  closeBtn?.addEventListener('click', closeDetail);
-  document.getElementById('detail-body')?.addEventListener('click', handlePanelClick);
-  document.getElementById('detail-body')?.addEventListener('submit', handleEditSubmit);
+  byId('detail-close', HTMLButtonElement).addEventListener('click', closeDetail);
+  byId('detail-body').addEventListener('click', handlePanelClick);
+  byId('detail-body').addEventListener('submit', handleEditSubmit);
 
-  on(EVENTS.NODE_SELECTED, openDetail);
+  on(EVENTS.NODE_SELECTED, (nodeId) => openDetail(String(nodeId)));
   on(EVENTS.NODE_CLEARED, closeDetail);
-
-  // Expose for inline onclick handlers in injected HTML.
-  window.kdgFocusNode = (id) => emit(EVENTS.NODE_SELECTED, id);
-  window.kdgFocusNodeBySlug = (slug) => {
-    const n = state.allNodes.find((x) => x.slug === slug);
-    if (n) emit(EVENTS.NODE_SELECTED, n.id);
-  };
-  window.kdgSyncRemote = async (entryId, btnId) => {
-    const btn = document.getElementById(btnId);
-    if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
-    try {
-      const res = await api.syncRemote(entryId, { force: true });
-      // Re-open detail to reflect freshly fetched body / new fetched_at.
-      await openDetail(entryId);
-      const status = res?.result?.status || 'done';
-      if (btn) btn.textContent = `↻ Sync now (last: ${status})`;
-    } catch (e) {
-      if (btn) btn.textContent = `Sync failed: ${e.message}`;
-    } finally {
-      if (btn) btn.disabled = false;
-    }
-  };
 }
 
 export async function openDetail(nodeId) {
@@ -47,29 +26,32 @@ export async function openDetail(nodeId) {
   } catch {
     entry = state.allNodes.find((n) => n.id === nodeId);
   }
-  if (!entry) return;
-  if (state.selectedId !== nodeId) return;
+  if (!entry || state.selectedId !== nodeId) return;
   currentEntry = entry;
 
-  const panel = document.getElementById('detail');
-  const body = document.getElementById('detail-body');
-  document.getElementById('detail-title').textContent = entry.title || nodeId;
+  const panel = byId('detail');
+  const body = byId('detail-body');
+  byId('detail-title').textContent = entry.title || nodeId;
 
   body.innerHTML = renderDetailHtml(entry, nodeId);
-
   panel.classList.remove('hidden');
+  panel.focus();
   highlightNode(nodeId);
   panZoomToNode(nodeId);
 }
 
 export function closeDetail() {
-  document.getElementById('detail')?.classList.add('hidden');
+  byId('detail').classList.add('hidden');
   state.selectedId = null;
   currentEntry = null;
   clearHighlight();
 }
 
-function renderDetailHtml(entry, nodeId) {
+/**
+ * @param {import('../../types.js').GraphNode} entry
+ * @param {string} nodeId
+ */
+export function renderDetailHtml(entry, nodeId) {
   const md = entry.metadata || {};
   let html = `<div class="detail-actions">
     <button class="panel-btn" type="button" data-action="edit-node">Edit</button>
@@ -89,7 +71,7 @@ function renderDetailHtml(entry, nodeId) {
     </div>`;
   }
 
-  if (entry.tags && entry.tags.length) {
+  if (entry.tags?.length) {
     html += `<div class="detail-section">
       <div class="detail-section-title">Tags</div>
       <div>${entry.tags.map((t) => `<span class="tag-pill">${escHtml(t)}</span>`).join('')}</div>
@@ -109,52 +91,54 @@ function renderDetailHtml(entry, nodeId) {
 
   if (md.remote_source) html += renderRemoteSourceHtml(entry.id, md.remote_source);
 
-  if (entry.assets && entry.assets.length) {
+  if (entry.assets?.length) {
     html += renderAssetsHtml(entry);
-  } else if (entry.scripts && entry.scripts.length) {
-    // Backward compat: render legacy scripts even if assets list was not synced.
+  } else if (entry.scripts?.length) {
     html += renderLegacyScriptsHtml(entry);
   }
 
-  if (md.related_environments && md.related_environments.length)
+  if (md.related_environments?.length) {
     html += section('Related environments', [kv('', md.related_environments.join(', '))]);
-  if (md.runtime_requirements && md.runtime_requirements.length)
+  }
+  if (md.runtime_requirements?.length) {
     html += section('Runtime requirements', [kv('', md.runtime_requirements.join(', '))]);
-  if (md.external_refs && md.external_refs.length)
+  }
+  if (md.external_refs?.length) {
     html += section('External refs', [kv('', md.external_refs.join(', '))]);
+  }
 
-  if (entry.internal_refs && entry.internal_refs.length) {
+  if (entry.internal_refs?.length) {
     html += `<div class="detail-section">
       <div class="detail-section-title">Wikilinks (${entry.internal_refs.length})</div>
       ${entry.internal_refs
         .map(
-          (r) =>
-            `<div class="edge-list-item"><span class="node-link" onclick="kdgFocusNodeBySlug('${escAttr(r)}')">${escHtml(r)}</span></div>`
+          (slug) =>
+            `<div class="edge-list-item">${linkButton(
+              slug,
+              'focus-node-slug',
+              'slug',
+              slug,
+            )}</div>`,
         )
         .join('')}
     </div>`;
   }
 
-  // Connections (from in-memory edges)
-  const outEdges = state.allEdges.filter(
-    (e) => (e.source.id || e.source) === nodeId
-  );
-  const inEdges = state.allEdges.filter(
-    (e) => (e.target.id || e.target) === nodeId
-  );
+  const outEdges = state.allEdges.filter((e) => (e.source.id || e.source) === nodeId);
+  const inEdges = state.allEdges.filter((e) => (e.target.id || e.target) === nodeId);
   if (outEdges.length || inEdges.length) {
     html += `<div class="detail-section"><div class="detail-section-title">Connections (${outEdges.length + inEdges.length})</div>`;
     for (const e of outEdges) {
       const tid = e.target.id || e.target;
       const tnode = state.allNodes.find((n) => n.id === tid);
-      html += edgeItem('→', e.relation, tid, tnode);
+      html += edgeItem('->', e.relation, tid, tnode);
     }
     for (const e of inEdges) {
       const sid = e.source.id || e.source;
       const snode = state.allNodes.find((n) => n.id === sid);
-      html += edgeItem('←', e.relation, sid, snode);
+      html += edgeItem('<-', e.relation, sid, snode);
     }
-    html += `</div>`;
+    html += '</div>';
   }
 
   if (md.custom && Object.keys(md.custom).length) {
@@ -168,8 +152,24 @@ function renderDetailHtml(entry, nodeId) {
 }
 
 function handlePanelClick(event) {
-  const action = event.target.closest('[data-action]')?.dataset.action;
-  if (!action || !currentEntry) return;
+  const trigger = event.target instanceof Element ? event.target.closest('[data-action]') : null;
+  const action = trigger?.dataset.action;
+  if (!action) return;
+
+  if (action === 'focus-node') {
+    emit(EVENTS.NODE_SELECTED, trigger.dataset.id);
+    return;
+  }
+  if (action === 'focus-node-slug') {
+    const node = state.allNodes.find((item) => item.slug === trigger.dataset.slug);
+    if (node) emit(EVENTS.NODE_SELECTED, node.id);
+    return;
+  }
+  if (action === 'sync-remote') {
+    syncRemote(trigger);
+    return;
+  }
+  if (!currentEntry) return;
 
   if (action === 'edit-node') {
     renderEditForm(currentEntry);
@@ -182,23 +182,24 @@ function handlePanelClick(event) {
 
 function renderCurrentDetail() {
   if (!currentEntry || !state.selectedId) return;
-  document.getElementById('detail-title').textContent = currentEntry.title || state.selectedId;
-  document.getElementById('detail-body').innerHTML =
-    renderDetailHtml(currentEntry, state.selectedId);
+  byId('detail-title').textContent = currentEntry.title || state.selectedId;
+  byId('detail-body').innerHTML = renderDetailHtml(currentEntry, state.selectedId);
 }
 
 function renderEditForm(entry) {
   const typeOptions = ENTRY_TYPES.map(
     (type) =>
-      `<option value="${escAttr(type)}"${type === entry.entry_type ? ' selected' : ''}>${escHtml(type)}</option>`
+      `<option value="${escAttr(type)}"${type === entry.entry_type ? ' selected' : ''}>${escHtml(type)}</option>`,
   ).join('');
-  const verificationOptions = Object.keys(VERIFICATION_COLORS).map(
-    (status) =>
-      `<option value="${escAttr(status)}"${status === entry.metadata?.verification_status ? ' selected' : ''}>${escHtml(status)}</option>`
-  ).join('');
+  const verificationOptions = Object.keys(VERIFICATION_COLORS)
+    .map(
+      (status) =>
+        `<option value="${escAttr(status)}"${status === entry.metadata?.verification_status ? ' selected' : ''}>${escHtml(status)}</option>`,
+    )
+    .join('');
 
-  document.getElementById('detail-title').textContent = `Edit ${entry.title}`;
-  document.getElementById('detail-body').innerHTML = `
+  byId('detail-title').textContent = `Edit ${entry.title}`;
+  byId('detail-body').innerHTML = `
     <form id="node-edit-form" class="node-edit-form">
       <label>
         <span>Title</span>
@@ -234,15 +235,17 @@ function renderEditForm(entry) {
         <button class="panel-btn" type="button" data-action="cancel-edit">Cancel</button>
       </div>
     </form>`;
+  queryRequired(byId('detail-body'), 'input[name="title"]', HTMLInputElement).focus();
 }
 
 async function handleEditSubmit(event) {
-  if (event.target.id !== 'node-edit-form' || !currentEntry) return;
+  if (!(event.target instanceof HTMLFormElement) || event.target.id !== 'node-edit-form') return;
+  if (!currentEntry) return;
   event.preventDefault();
 
   const form = event.target;
-  const submitBtn = form.querySelector('button[type="submit"]');
-  const errorEl = document.getElementById('node-edit-error');
+  const submitBtn = queryRequired(form, 'button[type="submit"]', HTMLButtonElement);
+  const errorEl = byId('node-edit-error');
   const data = new FormData(form);
   const splitList = (value) =>
     String(value || '')
@@ -291,26 +294,43 @@ async function deleteCurrentNode() {
   const linkText = `${linkCount} connected link${linkCount === 1 ? '' : 's'}`;
   if (!window.confirm(`Delete "${entry.title}" and ${linkText}? This cannot be undone.`)) return;
 
-  const deleteBtn = document.querySelector('[data-action="delete-node"]');
-  if (deleteBtn) {
-    deleteBtn.disabled = true;
-    deleteBtn.textContent = 'Deleting...';
-  }
+  const deleteBtn = queryRequired(
+    byId('detail-body'),
+    '[data-action="delete-node"]',
+    HTMLButtonElement,
+  );
+  deleteBtn.disabled = true;
+  deleteBtn.textContent = 'Deleting...';
   try {
     await api.deleteEntry(entry.id);
     closeDetail();
     emit(EVENTS.GRAPH_REFRESH);
   } catch (error) {
-    if (deleteBtn) {
-      deleteBtn.disabled = false;
-      deleteBtn.textContent = 'Delete';
-    }
+    deleteBtn.disabled = false;
+    deleteBtn.textContent = 'Delete';
     showPanelError(`Could not delete node: ${error.message}`);
   }
 }
 
+async function syncRemote(trigger) {
+  const entryId = trigger.dataset.entryId;
+  if (!entryId) return;
+  trigger.disabled = true;
+  trigger.textContent = 'Syncing...';
+  try {
+    const res = await api.syncRemote(entryId, { force: true });
+    await openDetail(entryId);
+    const status = res?.result?.status || 'done';
+    trigger.textContent = `Sync now (last: ${status})`;
+  } catch (error) {
+    trigger.textContent = `Sync failed: ${error.message}`;
+  } finally {
+    trigger.disabled = false;
+  }
+}
+
 function showPanelError(message) {
-  const body = document.getElementById('detail-body');
+  const body = byId('detail-body');
   const existing = body.querySelector('.panel-error');
   if (existing) {
     existing.textContent = message;
@@ -318,7 +338,7 @@ function showPanelError(message) {
   }
   body.insertAdjacentHTML(
     'afterbegin',
-    `<div class="panel-error" role="alert">${escHtml(message)}</div>`
+    `<div class="panel-error" role="alert">${escHtml(message)}</div>`,
   );
 }
 
@@ -333,70 +353,74 @@ function section(title, rows) {
   return `<div class="detail-section"><div class="detail-section-title">${escHtml(title)}</div>${content}</div>`;
 }
 
+function linkButton(label, action, dataName, dataValue) {
+  return `<button class="node-link" type="button" data-action="${escAttr(action)}" data-${escAttr(dataName)}="${escAttr(dataValue)}">${escHtml(label)}</button>`;
+}
+
 function edgeItem(arrow, relation, id, node) {
   const label = node ? node.title : id;
   return `<div class="edge-list-item">
     <span class="dir-badge">${arrow}</span>
     <span class="rel-badge">${escHtml(relation || 'link')}</span>
-    <span class="node-link" onclick="kdgFocusNode('${escAttr(id)}')">${escHtml(label)}</span>
+    ${linkButton(label, 'focus-node', 'id', id)}
   </div>`;
 }
 
-// ── Assets (folder-style) ────────────────────────────────────────────────────
-
 const FOLDER_ORDER = ['scripts', 'references', 'docs', 'examples', 'data', 'notes'];
 const FOLDER_ICONS = {
-  scripts: '⚙',
-  references: '🔗',
-  docs: '📄',
-  examples: '🧪',
-  data: '📊',
-  notes: '📝',
+  scripts: 'code',
+  references: 'link',
+  docs: 'doc',
+  examples: 'ex',
+  data: 'data',
+  notes: 'note',
 };
 
 function renderRemoteSourceHtml(entryId, src) {
-  const statusColor = {
-    ok: '#2e8b57',
-    stale: '#c98306',
-    error: '#c0392b',
-    never: '#888',
-  }[src.status] || '#888';
-  const fetched = src.fetched_at ? new Date(src.fetched_at).toLocaleString() : '—';
-  const btnId = `kdg-sync-btn-${entryId}`;
+  const statusColor =
+    {
+      ok: '#2e8b57',
+      stale: '#c98306',
+      error: '#c0392b',
+      never: '#888',
+    }[src.status] || '#888';
+  const fetched = src.fetched_at ? new Date(src.fetched_at).toLocaleString() : '-';
   const linkHtml = `<a href="${escAttr(src.url)}" target="_blank" rel="noopener">${escHtml(src.url)}</a>`;
-  const ghLine = src.kind === 'github'
-    ? `<div class="detail-kv"><span class="k">GitHub</span><span class="v">${escHtml(src.owner || '?')}/${escHtml(src.repo || '?')} @ <code>${escHtml(src.ref || 'main')}</code></span></div>
+  const ghLine =
+    src.kind === 'github'
+      ? `<div class="detail-kv"><span class="k">GitHub</span><span class="v">${escHtml(src.owner || '?')}/${escHtml(src.repo || '?')} @ <code>${escHtml(src.ref || 'main')}</code></span></div>
        <div class="detail-kv"><span class="k">Path</span><span class="v"><code>${escHtml(src.path || '')}</code></span></div>`
-    : '';
+      : '';
   const errLine = src.last_error
-    ? `<div class="detail-kv"><span class="k">Last error</span><span class="v" style="color:#c0392b">${escHtml(src.last_error)}</span></div>`
+    ? `<div class="detail-kv"><span class="k">Last error</span><span class="v remote-error">${escHtml(src.last_error)}</span></div>`
     : '';
   return `<div class="detail-section">
     <div class="detail-section-title">
       Remote source
-      <span style="margin-left:.5em;padding:1px 6px;border-radius:8px;background:${statusColor};color:#fff;font-size:.75em;text-transform:uppercase">${escHtml(src.status || 'never')}</span>
+      <span class="remote-status" style="background:${statusColor}">${escHtml(src.status || 'never')}</span>
     </div>
     <div class="detail-kv"><span class="k">URL</span><span class="v">${linkHtml}</span></div>
     ${ghLine}
     <div class="detail-kv"><span class="k">Last fetched</span><span class="v">${escHtml(fetched)}</span></div>
     <div class="detail-kv"><span class="k">Auto-sync</span><span class="v">${src.auto_sync ? `every ${src.sync_interval_seconds}s` : 'off'}</span></div>
     ${errLine}
-    <div style="margin-top:.5em">
-      <button id="${btnId}" class="tag-pill" style="cursor:pointer;border:none"
-              onclick="kdgSyncRemote('${escAttr(entryId)}','${btnId}')">↻ Sync now</button>
+    <div class="remote-actions">
+      <button class="tag-pill button-pill" type="button" data-action="sync-remote" data-entry-id="${escAttr(entryId)}">Sync now</button>
     </div>
   </div>`;
 }
 
 function groupAssetsByFolder(assets) {
   const groups = {};
-  for (const a of assets) {
-    const f = a.folder || 'notes';
-    (groups[f] ||= []).push(a);
+  for (const asset of assets) {
+    const folder = asset.folder || 'notes';
+    (groups[folder] ||= []).push(asset);
   }
   const ordered = {};
-  for (const f of FOLDER_ORDER) if (groups[f]) ordered[f] = groups[f];
-  for (const f of Object.keys(groups).sort()) if (!(f in ordered)) ordered[f] = groups[f];
+  for (const folder of FOLDER_ORDER) if (groups[folder]) ordered[folder] = groups[folder];
+  for (const folder of Object.keys(groups).sort()) {
+    if (!(folder in ordered)) ordered[folder] = groups[folder];
+  }
   return ordered;
 }
 
@@ -408,11 +432,11 @@ function renderAssetsHtml(entry) {
   const blocks = folders.map((folder, idx) => {
     const items = grouped[folder];
     const open = idx === 0 ? ' open' : '';
-    const icon = FOLDER_ICONS[folder] || '📁';
-    const itemsHtml = items.map((a) => renderAssetItem(entry.id, a)).join('');
+    const icon = FOLDER_ICONS[folder] || 'file';
+    const itemsHtml = items.map((asset) => renderAssetItem(entry.id, asset)).join('');
     return `<details class="asset-folder"${open}>
       <summary class="asset-folder-summary">
-        <span class="asset-folder-icon">${icon}</span>
+        <span class="asset-folder-icon">${escHtml(icon)}</span>
         <span class="asset-folder-name">${escHtml(folder)}</span>
         <span class="asset-folder-count">${items.length}</span>
       </summary>
@@ -420,30 +444,35 @@ function renderAssetsHtml(entry) {
     </details>`;
   });
 
-  const total = entry.assets.length;
   return `<div class="detail-section">
-    <div class="detail-section-title">Assets (${total})</div>
+    <div class="detail-section-title">Assets (${entry.assets.length})</div>
     <div class="asset-tree">${blocks.join('')}</div>
   </div>`;
 }
 
 function renderAssetItem(entryId, asset) {
   const url = api.assetUrl(entryId, asset.folder, asset.filename);
-  const reqs = asset.requirements && asset.requirements.length ? asset.requirements.join(', ') : '';
+  const reqs = asset.requirements?.length ? asset.requirements.join(', ') : '';
   const lang = asset.language ? `<span class="asset-tag">${escHtml(asset.language)}</span>` : '';
   const kind = `<span class="asset-tag asset-kind-${escAttr(asset.kind || 'file')}">${escHtml(asset.kind || 'file')}</span>`;
   const sizeKb = typeof asset.size === 'number' ? `${(asset.size / 1024).toFixed(1)} KB` : '';
-  const desc = asset.description ? `<div class="asset-desc">${escHtml(asset.description)}</div>` : '';
-  const reqsRow = reqs ? `<div class="asset-meta-row"><span class="k">requires</span><span class="v">${escHtml(reqs)}</span></div>` : '';
-  const sizeRow = sizeKb ? `<div class="asset-meta-row"><span class="k">size</span><span class="v">${escHtml(sizeKb)}</span></div>` : '';
+  const desc = asset.description
+    ? `<div class="asset-desc">${escHtml(asset.description)}</div>`
+    : '';
+  const reqsRow = reqs
+    ? `<div class="asset-meta-row"><span class="k">requires</span><span class="v">${escHtml(reqs)}</span></div>`
+    : '';
+  const sizeRow = sizeKb
+    ? `<div class="asset-meta-row"><span class="k">size</span><span class="v">${escHtml(sizeKb)}</span></div>`
+    : '';
 
   let action;
   if (asset.kind === 'link') {
-    action = `<a class="asset-btn link" href="${escAttr(asset.download_url || url)}" target="_blank" rel="noopener">↗ Open link</a>`;
+    action = `<a class="asset-btn link" href="${escAttr(asset.download_url || url)}" target="_blank" rel="noopener">Open link</a>`;
   } else if (asset.kind === 'text') {
-    action = `<a class="asset-btn" href="${escAttr(url)}" target="_blank" rel="noopener">⤴ View</a>`;
+    action = `<a class="asset-btn" href="${escAttr(url)}" target="_blank" rel="noopener">View</a>`;
   } else {
-    action = `<a class="asset-btn dl" href="${escAttr(url)}" download="${escAttr(asset.filename.split('/').pop())}">↓ Download</a>`;
+    action = `<a class="asset-btn dl" href="${escAttr(url)}" download="${escAttr(asset.filename.split('/').pop())}">Download</a>`;
   }
 
   return `<div class="asset-item">
@@ -458,24 +487,26 @@ function renderAssetItem(entryId, asset) {
 }
 
 function renderLegacyScriptsHtml(entry) {
-  const cards = entry.scripts.map((s) => {
-    const reqs = s.requirements && s.requirements.length ? s.requirements.join(', ') : '—';
-    const dlUrl = api.scriptDownloadUrl(entry.id, s.filename);
-    return `<div class="asset-item">
+  const cards = entry.scripts
+    .map((script) => {
+      const reqs = script.requirements?.length ? script.requirements.join(', ') : '-';
+      const dlUrl = api.scriptDownloadUrl(entry.id, script.filename);
+      return `<div class="asset-item">
       <div class="asset-item-head">
-        <span class="asset-filename">${escHtml(s.filename)}</span>
-        <span class="asset-tag">${escHtml(s.language || 'unknown')}</span>
+        <span class="asset-filename">${escHtml(script.filename)}</span>
+        <span class="asset-tag">${escHtml(script.language || 'unknown')}</span>
       </div>
-      ${s.description ? `<div class="asset-desc">${escHtml(s.description)}</div>` : ''}
+      ${script.description ? `<div class="asset-desc">${escHtml(script.description)}</div>` : ''}
       <div class="asset-meta-row"><span class="k">requires</span><span class="v">${escHtml(reqs)}</span></div>
-      <a class="asset-btn dl" href="${escAttr(dlUrl)}" download="${escAttr(s.filename)}">↓ Download</a>
+      <a class="asset-btn dl" href="${escAttr(dlUrl)}" download="${escAttr(script.filename)}">Download</a>
     </div>`;
-  }).join('');
+    })
+    .join('');
   return `<div class="detail-section">
     <div class="detail-section-title">Scripts (${entry.scripts.length})</div>
     <details class="asset-folder" open>
       <summary class="asset-folder-summary">
-        <span class="asset-folder-icon">⚙</span>
+        <span class="asset-folder-icon">code</span>
         <span class="asset-folder-name">scripts</span>
         <span class="asset-folder-count">${entry.scripts.length}</span>
       </summary>

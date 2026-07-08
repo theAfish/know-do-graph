@@ -1,7 +1,9 @@
 .edge {
   stroke-opacity: 0.55;
   stroke-width: 1.5;
-  transition: stroke-opacity var(--dur-fast), stroke-width var(--dur-fast);
+  transition:
+    stroke-opacity var(--dur-fast),
+    stroke-width var(--dur-fast);
 }
 .edge.highlighted {
   stroke-opacity: 1;
@@ -10,7 +12,9 @@
 
 .node circle {
   stroke-width: 2;
-  transition: r var(--dur-fast) var(--ease), opacity var(--dur-fast);
+  transition:
+    r var(--dur-fast) var(--ease),
+    opacity var(--dur-fast);
   cursor: pointer;
 }
 .node circle:hover {

@@ -40,9 +40,9 @@ export const isVirtualNode = (node) => {
   const tags = Array.isArray(node?.tags) ? node.tags : [];
   return Boolean(
     node?.virtual ||
-      node?.is_virtual ||
-      node?.metadata?.virtual ||
-      tags.some((tag) => ['placeholder', 'virtual'].includes(tag))
+    node?.is_virtual ||
+    node?.metadata?.virtual ||
+    tags.some((tag) => ['placeholder', 'virtual'].includes(tag)),
   );
 };
 

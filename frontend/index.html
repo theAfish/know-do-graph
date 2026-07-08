@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -34,7 +34,8 @@
         <input
           type="search"
           id="search-input"
-          placeholder="Search title, tags, content…  use #tag,  press /"
+          aria-label="Search graph entries"
+          placeholder="Search title, tags, content... use #tag, press /"
           autocomplete="off"
           spellcheck="false"
         />
@@ -55,15 +56,15 @@
       </div>
 
       <div class="toolbar-status">
-        <span id="live-badge" class="badge">● live</span>
-        <span id="stats" class="stats">Loading…</span>
+        <span id="live-badge" class="badge" aria-live="polite">live</span>
+        <span id="stats" class="stats" aria-live="polite">Loading...</span>
       </div>
     </header>
 
     <main id="main">
       <section id="canvas">
-        <div id="loading">Loading graph…</div>
-        <svg id="graph-svg" aria-label="Knowledge graph">
+        <div id="loading">Loading graph...</div>
+        <svg id="graph-svg" role="img" aria-label="Knowledge graph">
           <defs>
             <marker id="arrow" markerWidth="8" markerHeight="8" refX="18" refY="3" orient="auto">
               <path d="M0,0 L0,6 L8,3 z" fill="var(--edge-color)" />
@@ -79,10 +80,10 @@
         </aside>
       </section>
 
-      <aside id="detail" class="hidden" aria-label="Node detail">
+      <aside id="detail" class="hidden" aria-label="Node detail" tabindex="-1">
         <header id="detail-header">
           <h2 id="detail-title">Node Detail</h2>
-          <button id="detail-close" type="button" aria-label="Close detail panel">×</button>
+          <button id="detail-close" type="button" aria-label="Close detail panel">x</button>
         </header>
         <div id="detail-body"></div>
       </aside>

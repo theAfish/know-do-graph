@@ -44,7 +44,7 @@ export function attachNodeInteractions(simulationGetter) {
         d.fx = null;
         d.fy = null;
         dragActive = false;
-      })
+      }),
   );
 
   nodeSel

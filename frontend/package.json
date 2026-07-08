@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
     "preview": "vite preview",
     "watch": "vite build --watch"
   },
@@ -13,6 +17,12 @@
     "d3": "^7.9.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.30.1",
+    "eslint": "^9.30.1",
+    "globals": "^15.15.0",
+    "jsdom": "^25.0.1",
+    "prettier": "^3.6.2",
+    "vitest": "^2.1.9",
     "vite": "^5.4.10"
   }
 }

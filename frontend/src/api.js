@@ -1,6 +1,7 @@
 // Same-origin in prod (FastAPI serves dist) and in dev (Vite proxy).
 const API_BASE = '';
 
+/** @returns {Promise<unknown>} */
 async function jget(path) {
   const r = await fetch(`${API_BASE}${path}`);
   if (!r.ok) throw new Error(await errorMessage(r));
@@ -29,16 +30,26 @@ async function jrequest(path, options) {
 }
 
 export const api = {
+  /** @returns {Promise<import('./types.js').GraphPayload>} */
   getFullGraph: () => jget('/graph/full'),
+  /** @param {string} id @returns {Promise<import('./types.js').GraphNode>} */
   getEntry: (id) => jget(`/entries/${id}`),
+  /**
+   * @param {string} id
+   * @param {import('./types.js').GraphNode} entry
+   * @returns {Promise<import('./types.js').GraphNode>}
+   */
   updateEntry: (id, entry) =>
     jrequest(`/entries/${encodeURIComponent(id)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(entry),
     }),
-  deleteEntry: (id) =>
-    jrequest(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteEntry: (id) => jrequest(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /**
+   * @param {{q: string, type?: string, limit?: number, includeScores?: boolean}} options
+   * @returns {Promise<import('./types.js').GraphNode[]>}
+   */
   searchEntries: async ({ q, type, limit = 200, includeScores = true }) => {
     const params = new URLSearchParams({ q, limit: String(limit) });
     if (includeScores) params.set('include_scores', 'true');

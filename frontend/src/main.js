@@ -1,21 +1,27 @@
 import { api } from './api.js';
-import { state, on, EVENTS } from './state.js';
-import { render, highlightNode, getSimulation } from './graph/render.js';
 import { attachNodeInteractions } from './graph/interactions.js';
-import { initToolbar } from './ui/toolbar.js';
-import { initSearch } from './ui/search.js';
-import { initPanel, closeDetail } from './ui/panel.js';
+import { getSimulation, highlightNode, render } from './graph/render.js';
+import { closeDetail, initPanel } from './ui/panel.js';
 import { initLegend } from './ui/legend.js';
+import { initSearch } from './ui/search.js';
 import { initShortcuts } from './ui/shortcuts.js';
+import { initToolbar } from './ui/toolbar.js';
 import { connectSSE } from './sse.js';
+import { EVENTS, on, state } from './state.js';
+import { byId, optionalById } from './dom.js';
 import { debounce } from './utils.js';
 
+/**
+ * @param {import('./types.js').GraphNode[]} nodes
+ * @param {import('./types.js').GraphEdge[]} edges
+ * @param {number} [alpha]
+ */
 function renderAndWire(nodes, edges, alpha = 0.8) {
   render(nodes, edges, alpha);
   attachNodeInteractions(getSimulation);
 }
 
-async function loadGraph() {
+export async function loadGraph() {
   try {
     const data = await api.getFullGraph();
     renderAndWire(data.nodes, data.edges);
@@ -53,22 +59,25 @@ const softRefresh = debounce(async () => {
 }, 500);
 
 function showError(msg) {
-  document.getElementById('loading')?.classList.add('hidden');
-  const banner = document.getElementById('error-banner');
-  if (banner) {
-    banner.textContent = `${msg} Make sure the API server is running.`;
-    banner.hidden = false;
-  }
+  optionalById('loading')?.classList.add('hidden');
+  const banner = byId('error-banner');
+  banner.textContent = `${msg} Make sure the API server is running.`;
+  banner.hidden = false;
 }
 
-// ── Boot ────────────────────────────────────────────────────────────────────
-initToolbar();
-initSearch();
-initPanel();
-initLegend();
-initShortcuts();
+export function bootstrap() {
+  initToolbar();
+  initSearch();
+  initPanel();
+  initLegend();
+  initShortcuts();
 
-on(EVENTS.GRAPH_REFRESH, softRefresh);
+  on(EVENTS.GRAPH_REFRESH, softRefresh);
 
-loadGraph();
-connectSSE(() => softRefresh());
+  loadGraph();
+  connectSSE(() => softRefresh());
+}
+
+if (!import.meta.env.VITEST) {
+  bootstrap();
+}

@@ -1,6 +1,7 @@
 import { ENTRY_TYPES, COLOR_MODES } from '../constants.js';
 import { state, on, emit, EVENTS } from '../state.js';
 import { resetView } from '../graph/render.js';
+import { byId } from '../dom.js';
 
 export function initToolbar() {
   populateTypeFilter();
@@ -11,8 +12,7 @@ export function initToolbar() {
 }
 
 function populateTypeFilter() {
-  const sel = document.getElementById('type-filter');
-  if (!sel) return;
+  const sel = byId('type-filter', HTMLSelectElement);
   for (const t of ENTRY_TYPES) {
     const opt = document.createElement('option');
     opt.value = t;
@@ -22,8 +22,7 @@ function populateTypeFilter() {
 }
 
 function populateColorMode() {
-  const sel = document.getElementById('color-mode');
-  if (!sel) return;
+  const sel = byId('color-mode', HTMLSelectElement);
   sel.innerHTML = '';
   for (const m of COLOR_MODES) {
     const opt = document.createElement('option');
@@ -35,27 +34,27 @@ function populateColorMode() {
 }
 
 function bindButtons() {
-  const labelsBtn = document.getElementById('toggle-labels');
-  const colorSel = document.getElementById('color-mode');
-  const resetBtn = document.getElementById('reset-view');
+  const labelsBtn = byId('toggle-labels', HTMLButtonElement);
+  const colorSel = byId('color-mode', HTMLSelectElement);
+  const resetBtn = byId('reset-view', HTMLButtonElement);
 
   syncLabelBtn(labelsBtn);
 
-  labelsBtn?.addEventListener('click', () => {
+  labelsBtn.addEventListener('click', () => {
     state.showLabels = !state.showLabels;
     syncLabelBtn(labelsBtn);
     applyLabelVisibility();
     emit(EVENTS.LABELS_CHANGED, state.showLabels);
   });
 
-  colorSel?.addEventListener('change', (e) => {
+  colorSel.addEventListener('change', (e) => {
     state.colorMode = e.target.value || 'type';
     emit(EVENTS.COLOR_MODE_CHANGED, state.colorMode);
     // Kept for backward compat with any external listeners.
     emit(EVENTS.SCORE_MODE_CHANGED, state.colorMode);
   });
 
-  resetBtn?.addEventListener('click', () => resetView());
+  resetBtn.addEventListener('click', () => resetView());
 }
 
 function applyLabelVisibility() {
@@ -66,14 +65,12 @@ function applyLabelVisibility() {
 }
 
 function syncLabelBtn(btn) {
-  if (!btn) return;
   btn.textContent = `Labels: ${state.showLabels ? 'on' : 'off'}`;
   btn.classList.toggle('active', state.showLabels);
 }
 
 function bindSSEStatus() {
-  const badge = document.getElementById('live-badge');
-  if (!badge) return;
+  const badge = byId('live-badge');
   const map = {
     connected: { cls: 'badge connected', text: '● live' },
     updating: { cls: 'badge updating', text: '↻ updating…' },
