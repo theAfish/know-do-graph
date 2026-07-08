@@ -95,20 +95,19 @@ named post-commit operation and covered by the broader validation suite.
 
 ## Priority 5 - Strengthen API Contracts
 
-- [ ] Add Pydantic request/response models for all FastAPI routes instead of returning untyped `dict` and `list[dict]` from most endpoints.
-- [ ] Add pagination metadata for list/search endpoints rather than only `limit` and `offset`.
-- [ ] Standardize identifier handling across API routes. Some routes accept ID/slug/alias, but names such as `entry_id` do not always make that clear.
-- [ ] Extract the long remote instruction text from `api/routes/remote.py` into a template file or docs module.
-- [ ] Add API tests for entry CRUD, assets/scripts, remote search, remote feedback, memory routes, and graph reload/events.
-- [ ] Add compatibility tests for the public Python client, CLI, and REST API doing the same lifecycle operations.
+- [x] Add Pydantic request/response models for all FastAPI routes instead of returning untyped `dict` and `list[dict]` from most endpoints.
+- [x] Add pagination metadata for list/search endpoints rather than only `limit` and `offset`.
+- [x] Standardize identifier handling across API routes. Some routes accept ID/slug/alias, but names such as `entry_id` do not always make that clear.
+- [x] Extract the long remote instruction text from `api/routes/remote.py` into a template file or docs module.
+- [x] Add API tests for entry CRUD, assets/scripts, remote search, remote feedback, memory routes, and graph reload/events.
+- [x] Add compatibility tests for the public Python client, CLI, and REST API doing the same lifecycle operations.
 
-Progress note: API contracts now live in `api/schemas.py`, with typed response
-models for entry, graph, progressive retrieval, memory, remote-sync, agent, and
-remote agent routes. `/entries`, `/entries/search`, memory traces, and memory
-edges now return pagination envelopes where appropriate; frontend search unwraps
-the new entry search envelope. `tests/test_api_contracts.py` covers these route
-shapes. Remaining work is to extract the long remote instruction template and
-add full lifecycle compatibility coverage.
+Implementation note: API contracts now live in `api/schemas.py`, with typed
+response models across entry, graph, progressive retrieval, memory, remote-sync,
+agent, and remote agent routes. List/search style endpoints return pagination
+envelopes where appropriate, remote instructions render from
+`api/routes/remote_instructions.py`, and `tests/test_api_contracts.py` covers
+route shapes plus REST, public client, and CLI lifecycle compatibility.
 
 ## Priority 6 - Improve Agent Tooling Architecture
 

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from typer.testing import CliRunner
 
 from api.routes import agent as agent_routes
 from api.routes import entries as entries_routes
@@ -17,6 +18,7 @@ from api.routes import remote_sync as remote_sync_routes
 from api.routes import retrieve as retrieve_routes
 from core.storage.database import bind_session_factory, get_db
 from know_do_graph import EdgeRelation, EntryType, KnowDoGraph
+from know_do_graph.cli.app import app as cli_app
 
 
 class ApiContractTests(unittest.TestCase):
@@ -245,6 +247,130 @@ class ApiContractTests(unittest.TestCase):
             distill = self.client.post("/remote/distill", json={"dry_run": True})
         self.assertEqual(chat.status_code, 503)
         self.assertEqual(distill.status_code, 503)
+
+    def test_rest_and_public_client_support_same_entry_lifecycle(self) -> None:
+        rest_created = self.client.post(
+            "/entries/",
+            json={
+                "title": "REST Lifecycle Node",
+                "content": "Initial REST lifecycle content.",
+                "entry_type": "capability",
+                "tags": ["lifecycle"],
+                "aliases": ["rest-life"],
+            },
+        )
+        self.assertEqual(rest_created.status_code, 201)
+        rest_id = rest_created.json()["id"]
+
+        rest_search = self.client.get("/entries/search?q=lifecycle")
+        self.assertEqual(rest_search.status_code, 200)
+        self.assertIn(rest_id, {item["id"] for item in rest_search.json()["items"]})
+
+        rest_alias_get = self.client.get("/entries/rest-life")
+        self.assertEqual(rest_alias_get.status_code, 200)
+        self.assertEqual(rest_alias_get.json()["id"], rest_id)
+
+        rest_asset = self.client.post(
+            f"/entries/{rest_id}/assets",
+            json={
+                "folder": "scripts",
+                "filename": "run.py",
+                "kind": "file",
+                "content": "print('lifecycle')",
+                "language": "python",
+            },
+        )
+        self.assertEqual(rest_asset.status_code, 201)
+        self.assertEqual(rest_asset.json()["path"], "scripts/run.py")
+
+        rest_scripts = self.client.get(f"/entries/{rest_id}/scripts")
+        self.assertEqual(rest_scripts.status_code, 200)
+        self.assertEqual(rest_scripts.json()[0]["filename"], "run.py")
+
+        rest_updated = self.client.put(
+            f"/entries/{rest_id}",
+            json={**rest_created.json(), "content": "Updated REST lifecycle content."},
+        )
+        self.assertEqual(rest_updated.status_code, 200)
+        self.assertEqual(rest_updated.json()["content"], "Updated REST lifecycle content.")
+
+        rest_feedback = self.client.post(
+            f"/entries/{rest_id}/feedback",
+            json={"verdict": "works", "note": "REST lifecycle verified."},
+        )
+        self.assertEqual(rest_feedback.status_code, 201)
+        self.assertEqual(rest_feedback.json()["verification_status"], "self_tested")
+
+        rest_deleted = self.client.delete(f"/entries/{rest_id}")
+        self.assertEqual(rest_deleted.status_code, 204)
+        self.assertIsNone(self.graph.get(rest_id))
+
+        reloaded = self.client.post("/graph/reload")
+        self.assertEqual(reloaded.status_code, 200)
+        self.assertTrue(reloaded.json()["reloaded"])
+
+        client_created = self.graph.add(
+            "Client Lifecycle Node",
+            content="Initial client lifecycle content.",
+            entry_type=EntryType.capability,
+            tags=["lifecycle"],
+            aliases=["client-life"],
+        )
+        self.assertEqual(self.graph.get("client-life").id, client_created.id)
+        self.assertEqual(
+            self.graph.search("client lifecycle", mode="keyword")[0].id, client_created.id
+        )
+
+        client_updated = self.graph.update(
+            client_created.id,
+            content="Updated client lifecycle content.",
+        )
+        self.assertEqual(client_updated.content, "Updated client lifecycle content.")
+
+        client_status = self.graph.set_verification_status(client_created.id, "self_tested")
+        self.assertEqual(client_status.metadata.verification_status.value, "self_tested")
+
+        self.assertTrue(self.graph.delete(client_created.id))
+        self.assertIsNone(self.graph.get(client_created.id))
+
+    def test_remote_instruction_renderer_is_extracted_and_preserves_host(self) -> None:
+        response = self.client.get("/remote", headers={"host": "example.test"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("http://example.test/remote/search", response.text)
+
+    def test_cli_entry_lifecycle_uses_same_database_contracts(self) -> None:
+        runner = CliRunner()
+        with bind_session_factory(self.graph._session_factory):
+            with patch("know_do_graph.cli.legacy._init", return_value=None):
+                added = runner.invoke(
+                    cli_app,
+                    [
+                        "entry",
+                        "add",
+                        "CLI Lifecycle Node",
+                        "--content",
+                        "CLI lifecycle content.",
+                        "--type",
+                        "capability",
+                        "--tags",
+                        "lifecycle",
+                    ],
+                )
+                self.assertEqual(added.exit_code, 0, added.output)
+
+                self.graph.refresh()
+                entry = self.graph.search("CLI lifecycle", mode="keyword")[0]
+                self.assertEqual(entry.title, "CLI Lifecycle Node")
+
+                shown = runner.invoke(cli_app, ["entry", "show", entry.slug])
+                self.assertEqual(shown.exit_code, 0, shown.output)
+                self.assertIn("CLI lifecycle content.", shown.output)
+
+                deleted = runner.invoke(cli_app, ["entry", "delete", entry.id, "--yes"])
+                self.assertEqual(deleted.exit_code, 0, deleted.output)
+
+        self.graph.refresh()
+        self.assertIsNone(self.graph.get(entry.id))
 
 
 if __name__ == "__main__":
