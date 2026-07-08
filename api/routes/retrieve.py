@@ -13,6 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from api.schemas import ProgressiveEntry
 from core.app_state import graph as _graph
 from core.retrieval.progressive import ProgressiveRetriever
 from core.schemas.entry import Entry, implied_level
@@ -32,7 +33,7 @@ def _annotate(entry: Entry) -> dict:
     return data
 
 
-@router.get("/plan", response_model=list[dict])
+@router.get("/plan", response_model=list[ProgressiveEntry])
 def plan(
     goal: str = Query(..., description="Free-text description of what you want to do"),
     k: int = Query(5, ge=1, le=50),
@@ -48,7 +49,7 @@ def plan(
     return [_annotate(e) for e in retriever.plan(goal=goal, k=k, mode=mode, include_l2=include_l2)]
 
 
-@router.get("/heuristics", response_model=list[dict])
+@router.get("/heuristics", response_model=list[ProgressiveEntry])
 def heuristics(
     skill: str = Query(..., description="Entry id, slug, or alias of the L1/L2 skill"),
     k: int = Query(5, ge=1, le=50),
@@ -64,7 +65,7 @@ def heuristics(
     ]
 
 
-@router.get("/constraints", response_model=list[dict])
+@router.get("/constraints", response_model=list[ProgressiveEntry])
 def constraints(
     skill: str = Query(..., description="Entry id, slug, or alias of the L1/L2 skill"),
     k: int = Query(5, ge=1, le=50),

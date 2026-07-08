@@ -39,11 +39,12 @@ export const api = {
     }),
   deleteEntry: (id) =>
     jrequest(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  searchEntries: ({ q, type, limit = 200, includeScores = true }) => {
+  searchEntries: async ({ q, type, limit = 200, includeScores = true }) => {
     const params = new URLSearchParams({ q, limit: String(limit) });
     if (includeScores) params.set('include_scores', 'true');
     if (type) params.set('entry_type', type);
-    return jget(`/entries/search?${params}`);
+    const data = await jget(`/entries/search?${params}`);
+    return Array.isArray(data) ? data : data.items;
   },
   scriptDownloadUrl: (entryId, filename) =>
     `${API_BASE}/entries/${entryId}/scripts/${encodeURIComponent(filename)}`,

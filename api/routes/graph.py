@@ -6,6 +6,12 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
+from api.schemas import (
+    GraphDataResponse,
+    GraphPathResponse,
+    GraphReloadResponse,
+    GraphStatsResponse,
+)
 from core.app_state import graph as _graph
 
 router = APIRouter()
@@ -29,42 +35,38 @@ class _SSEResponse(StreamingResponse):
             pass
 
 
-@router.get("/stats")
-def graph_stats() -> dict:
+@router.get("/stats", response_model=GraphStatsResponse)
+def graph_stats() -> GraphStatsResponse:
     """Return high-level graph statistics."""
     return _graph.stats()
 
 
-@router.get("/path")
-def find_path(source: str, target: str, cutoff: int = 6) -> dict:
+@router.get("/path", response_model=GraphPathResponse)
+def find_path(source: str, target: str, cutoff: int = 6) -> GraphPathResponse:
     """Find all simple paths between two entry IDs."""
     paths = _graph.find_paths(source, target, cutoff=cutoff)
     return {"source": source, "target": target, "paths": paths}
 
 
-@router.get("/subgraph/{entry_id}")
-def get_subgraph(entry_id: str, depth: int = 2) -> dict:
+@router.get("/subgraph/{entry_id}", response_model=GraphDataResponse)
+def get_subgraph(entry_id: str, depth: int = 2) -> GraphDataResponse:
     """Return the ego-subgraph centred on *entry_id* up to *depth* hops."""
     sg = _graph.get_subgraph(entry_id, depth=depth)
     return {
+        "metadata": {},
         "nodes": [{"id": n, **d} for n, d in sg.nodes(data=True)],
         "edges": [{"source": u, "target": v, **d} for u, v, d in sg.edges(data=True)],
     }
 
 
-@router.get("/full")
-def get_full_graph() -> dict:
+@router.get("/full", response_model=GraphDataResponse)
+def get_full_graph() -> GraphDataResponse:
     """Return all nodes and edges in the graph."""
-    g = _graph._g
-    return {
-        "metadata": dict(g.graph),
-        "nodes": [{"id": n, **d} for n, d in g.nodes(data=True)],
-        "edges": [{"source": u, "target": v, **d} for u, v, d in g.edges(data=True)],
-    }
+    return {"metadata": _graph.stats(), **_graph.full_dump()}
 
 
-@router.post("/reload")
-def reload_graph() -> dict:
+@router.post("/reload", response_model=GraphReloadResponse)
+def reload_graph() -> GraphReloadResponse:
     """Rebuild the in-memory graph from the DB and broadcast a refresh event.
 
     Useful after out-of-process writes (CLI extract, db merge, manual sqlite

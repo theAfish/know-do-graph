@@ -7,6 +7,16 @@ from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from api.schemas import (
+    AssetFolderResponse,
+    AssetMetadata,
+    EdgeListResponse,
+    EntryAssetsResponse,
+    EntryListResponse,
+    EntrySearchResponse,
+    PaginationMeta,
+    ScriptSummary,
+)
 from core.app_state import graph as _graph
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
@@ -29,17 +39,21 @@ def _engine(db: Session = Depends(get_db)) -> RetrievalEngine:
     return RetrievalEngine(db, _graph)
 
 
-@router.get("/", response_model=list[dict])
+@router.get("/", response_model=EntryListResponse)
 def list_entries(
     limit: int = 20,
     offset: int = 0,
     engine: RetrievalEngine = Depends(_engine),
 ):
     """List entries with pagination."""
-    return entries_to_dict(engine.list_entries(limit=limit, offset=offset))
+    items = engine.list_entries(limit=limit, offset=offset)
+    return {
+        "items": items,
+        "pagination": PaginationMeta(limit=limit, offset=offset, count=len(items)),
+    }
 
 
-@router.get("/search", response_model=list[dict])
+@router.get("/search", response_model=EntrySearchResponse)
 def search_entries(
     q: Optional[str] = None,
     tags: Optional[str] = None,
@@ -58,12 +72,20 @@ def search_entries(
         results = engine.search_entries_scored(
             query=q, tags=tag_list, entry_type=entry_type, limit=limit
         )
-        return [{**entry_to_dict(e), "_score": round(score, 4)} for e, score in results]
-    results = engine.search_entries(query=q, tags=tag_list, entry_type=entry_type, limit=limit)
-    return entries_to_dict(results)
+        items = [{**entry_to_dict(e), "_score": round(score, 4)} for e, score in results]
+    else:
+        results = engine.search_entries(query=q, tags=tag_list, entry_type=entry_type, limit=limit)
+        items = entries_to_dict(results)
+    return {
+        "items": items,
+        "pagination": PaginationMeta(limit=limit, count=len(items)),
+        "query": q,
+        "tags": tag_list,
+        "entry_type": entry_type,
+    }
 
 
-@router.get("/{entry_id}", response_model=dict)
+@router.get("/{entry_id}", response_model=Entry)
 def get_entry(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     """Retrieve a single entry by ID, slug, or alias."""
     entry = engine.resolve_identifier(entry_id)
@@ -72,14 +94,14 @@ def get_entry(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     return entry_to_dict(entry)
 
 
-@router.post("/", response_model=dict, status_code=201)
+@router.post("/", response_model=Entry, status_code=201)
 def create_entry(entry: Entry, db: Session = Depends(get_db)):
     """Create a new entry."""
     saved = entry_service.persist_entry(db, _graph, entry)
     return entry_to_dict(saved)
 
 
-@router.put("/{entry_id}", response_model=dict)
+@router.put("/{entry_id}", response_model=Entry)
 def update_entry(entry_id: str, entry: Entry, db: Session = Depends(get_db)):
     """Update an existing entry."""
     entry.id = entry_id
@@ -99,7 +121,7 @@ def delete_entry(entry_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Entry not found")
 
 
-@router.get("/{entry_id}/related", response_model=list[dict])
+@router.get("/{entry_id}/related", response_model=EntryListResponse)
 def get_related(
     entry_id: str,
     depth: int = 1,
@@ -108,16 +130,23 @@ def get_related(
 ):
     """Return entries related to *entry_id* via the graph."""
     related = engine.get_related_entries(entry_id, depth=depth, relation=relation)
-    return entries_to_dict(related)
+    return {
+        "items": related,
+        "pagination": PaginationMeta(limit=len(related), count=len(related)),
+    }
 
 
-@router.get("/{entry_id}/edges", response_model=list[dict])
+@router.get("/{entry_id}/edges", response_model=EdgeListResponse)
 def get_edges(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     """Return all edges incident to *entry_id*."""
-    return [e.model_dump(mode="json") for e in engine.get_edges_for_entry(entry_id)]
+    items = engine.get_edges_for_entry(entry_id)
+    return {
+        "items": items,
+        "pagination": PaginationMeta(limit=len(items), count=len(items)),
+    }
 
 
-@router.get("/{entry_id}/scripts")
+@router.get("/{entry_id}/scripts", response_model=list[ScriptSummary])
 def list_entry_scripts(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     """List all scripts attached to an entry (metadata only — no code bodies)."""
     entry = engine.resolve_identifier(entry_id)
@@ -200,7 +229,7 @@ def _media_type_for_language(language: str) -> str:
 # ── Folder-style assets ─────────────────────────────────────────────────────
 
 
-@router.get("/{entry_id}/assets")
+@router.get("/{entry_id}/assets", response_model=EntryAssetsResponse)
 def list_entry_assets(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     """List all assets attached to an entry, grouped by folder.
 
@@ -219,7 +248,7 @@ def list_entry_assets(entry_id: str, engine: RetrievalEngine = Depends(_engine))
     }
 
 
-@router.get("/{entry_id}/assets/{folder}")
+@router.get("/{entry_id}/assets/{folder}", response_model=AssetFolderResponse)
 def list_entry_assets_in_folder(
     entry_id: str, folder: str, engine: RetrievalEngine = Depends(_engine)
 ):
@@ -288,7 +317,7 @@ class AssetBody(BaseModel):
     metadata: dict = {}
 
 
-@router.post("/{entry_id}/assets", status_code=201)
+@router.post("/{entry_id}/assets", response_model=AssetMetadata, status_code=201)
 def add_entry_asset(entry_id: str, body: AssetBody, db: Session = Depends(get_db)):
     """Add or replace an asset on an entry.
 

@@ -102,6 +102,13 @@ named post-commit operation and covered by the broader validation suite.
 - [ ] Add API tests for entry CRUD, assets/scripts, remote search, remote feedback, memory routes, and graph reload/events.
 - [ ] Add compatibility tests for the public Python client, CLI, and REST API doing the same lifecycle operations.
 
+Progress note: initial API contracts now live in `api/schemas.py`, with typed
+response models for entry, graph, and progressive retrieval routes. `/entries`
+and `/entries/search` now return `{ items, pagination }`, frontend search unwraps
+the new envelope, and `tests/test_api_contracts.py` covers the new route shapes.
+Remaining work is to extend contracts and tests through agent, memory, remote,
+remote-sync, and full lifecycle compatibility coverage.
+
 ## Priority 6 - Improve Agent Tooling Architecture
 
 - [ ] Introduce a tool registry abstraction instead of building large module-level dispatch dictionaries by hand.
