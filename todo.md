@@ -80,12 +80,18 @@ Priority 6 agent-tooling pass.
 
 ## Priority 4 - Improve Persistence and Migrations
 
-- [ ] Replace ad hoc SQLite migrations in `core/storage/database.py` with a small migration system or Alembic.
-- [ ] Add migration tests for fresh databases and older starter databases.
-- [ ] Define indexes explicitly for common lookups: slug, aliases if supported, entry type, verification status, timestamps, and edge source/target.
-- [ ] Review transaction boundaries in repository methods. Avoid committing multiple times inside a single high-level operation unless the behavior is intentional.
-- [ ] Make embedding refresh an explicit post-commit service or background job so write operations are easier to reason about and test.
-- [ ] Add a database config object instead of relying on module-level `DB_PATH`, `engine`, and `SessionLocal` in new code.
+- [x] Replace ad hoc SQLite migrations in `core/storage/database.py` with a small migration system or Alembic.
+- [x] Add migration tests for fresh databases and older starter databases.
+- [x] Define indexes explicitly for common lookups: slug, aliases if supported, entry type, verification status, timestamps, and edge source/target.
+- [x] Review transaction boundaries in repository methods. Avoid committing multiple times inside a single high-level operation unless the behavior is intentional.
+- [x] Make embedding refresh an explicit post-commit service or background job so write operations are easier to reason about and test.
+- [x] Add a database config object instead of relying on module-level `DB_PATH`, `engine`, and `SessionLocal` in new code.
+
+Implementation note: database migrations now live in `core/storage/migrations.py`,
+database path resolution lives in `core/storage/config.py`, and embedding refresh
+is isolated in `core/services/embeddings.py`. Repository writes still preserve
+the existing commit semantics, but the secondary embedding update is now a
+named post-commit operation and covered by the broader validation suite.
 
 ## Priority 5 - Strengthen API Contracts
 

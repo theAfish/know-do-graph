@@ -52,34 +52,9 @@ def _refresh_embedding(db: Session, entry: Entry, model) -> None:
 
     Failures are logged and swallowed — embedding must never break writes.
     """
-    from core.retrieval import vector_store
-    from core.retrieval.embedder import build_embedding_text, get_default_embedder, text_hash
+    from core.services.embeddings import refresh_entry_embedding_after_commit
 
-    try:
-        embedder = get_default_embedder()
-        if not embedder.available:
-            return
-        text = build_embedding_text(
-            title=entry.title,
-            aliases=entry.aliases,
-            tags=entry.tags,
-            content=entry.content,
-        )
-        new_hash = text_hash(text)
-        if model.embedding_hash == new_hash:
-            return
-        vec = embedder.embed([text])[0]
-        if not vec:
-            return
-        if vector_store.upsert(db, entry.id, vec):
-            model.embedding_hash = new_hash
-            db.commit()
-    except Exception as exc:
-        logger.warning("embedding refresh failed for %s: %s", entry.id, exc)
-        try:
-            db.rollback()
-        except Exception:
-            pass
+    refresh_entry_embedding_after_commit(db, entry, model)
 
 
 class EntryRepository:

@@ -1,4 +1,3 @@
-import os
 import shutil
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -6,16 +5,16 @@ from importlib import resources
 from pathlib import Path
 from typing import Callable, Generator, Iterator
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from core.storage.config import DatabaseConfig
+from core.storage.migrations import apply_migrations, create_vector_table
+
 
 def _database_path() -> Path:
-    configured_path = os.environ.get("KDG_DB_PATH")
-    if configured_path:
-        return Path(configured_path).expanduser().resolve()
-    return (Path.cwd() / "data" / "know_do_graph.db").resolve()
+    return DatabaseConfig.from_env().path
 
 
 def create_database_engine(path: str | Path) -> Engine:
@@ -105,33 +104,10 @@ def initialize_database(db_engine: Engine) -> None:
     from core.storage.models import Base
 
     Base.metadata.create_all(bind=db_engine)
-
-    # Migrate: add new columns idempotently (SQLite only supports ADD COLUMN)
+    apply_migrations(db_engine)
     with db_engine.connect() as conn:
-        for col, default in [
-            ("aliases", "'[]'"),
-            ("scripts_json", "'[]'"),
-            ("assets_json", "'[]'"),
-            ("embedding_hash", "NULL"),
-        ]:
-            try:
-                conn.execute(text(f"ALTER TABLE entries ADD COLUMN {col} TEXT DEFAULT {default}"))
-                conn.commit()
-            except Exception:
-                pass  # column already exists
-
-        # Create the sqlite-vec virtual table for entry embeddings (if extension loaded).
-        # 384 dims matches sentence-transformers/all-MiniLM-L6-v2 (the default).
-        try:
-            conn.execute(
-                text(
-                    "CREATE VIRTUAL TABLE IF NOT EXISTS entry_embeddings USING vec0("
-                    "entry_id TEXT PRIMARY KEY, embedding FLOAT[384])"
-                )
-            )
-            conn.commit()
-        except Exception:
-            pass  # sqlite-vec not loaded; hybrid retrieval will fall back to keyword
+        create_vector_table(conn)
+        conn.commit()
 
 
 def init_db() -> None:

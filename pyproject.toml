@@ -70,11 +70,13 @@ python_version = "3.11"
 ignore_missing_imports = true
 follow_imports = "skip"
 files = [
+    "core/services",
+    "core/storage/config.py",
+    "core/storage/migrations.py",
     "core/extraction",
     "core/retrieval/fusion.py",
     "core/retrieval/vector_store.py",
     "core/schemas/edge.py",
-    "core/services",
     "core/utils",
 ]
 
