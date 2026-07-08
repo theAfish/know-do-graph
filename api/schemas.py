@@ -173,3 +173,65 @@ class AgentMemoryReviewJob(BaseModel):
     results: list[dict[str, Any]]
     errors: list[str]
     summary: str
+
+
+class RemoteChatResponse(BaseModel):
+    response: str
+    session_id: str
+
+
+class RemoteEntrySummary(BaseModel):
+    id: str
+    title: str
+    slug: str
+    entry_type: str
+    tags: list[str]
+    aliases: list[str]
+    snippet: str
+
+
+class RemoteGraphOverviewResponse(BaseModel):
+    is_dag: bool
+    unreviewed_nodes: int
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+
+
+class RemoteAttachedSearchResponse(BaseModel):
+    total_attached: int
+    returned: int
+    query: str | None = None
+    results: list[RemoteEntrySummary]
+
+
+class RemoteFeedbackResponse(BaseModel):
+    id: str
+    session_id: str
+    stored: bool
+    entry_feedback: dict[str, Any] | None = None
+
+
+class RemoteSubmitResponse(BaseModel):
+    submitted: bool
+    ids: list[str]
+    session_id: str
+    tag: str
+
+
+class RemoteInboxItem(BaseModel):
+    id: str
+    session_id: str
+    title: str
+    preview: str
+    tags: list[str]
+    created_at: str
+    source_format: str
+
+
+class RemoteDistillResponse(BaseModel):
+    distilled: int | None = None
+    message: str | None = None
+    dry_run: bool | None = None
+    pending_count: int | None = None
+    prompt: str | None = None
+    response: str | None = None

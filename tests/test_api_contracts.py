@@ -12,6 +12,7 @@ from api.routes import agent as agent_routes
 from api.routes import entries as entries_routes
 from api.routes import graph as graph_routes
 from api.routes import mem as mem_routes
+from api.routes import remote_legacy as remote_routes
 from api.routes import remote_sync as remote_sync_routes
 from api.routes import retrieve as retrieve_routes
 from core.storage.database import bind_session_factory, get_db
@@ -26,11 +27,13 @@ class ApiContractTests(unittest.TestCase):
         self._route_graphs = (
             entries_routes._graph,
             graph_routes._graph,
+            remote_routes._graph,
             remote_sync_routes._graph,
             retrieve_routes._graph,
         )
         entries_routes._graph = self.graph._graph
         graph_routes._graph = self.graph._graph
+        remote_routes._graph = self.graph._graph
         remote_sync_routes._graph = self.graph._graph
         retrieve_routes._graph = self.graph._graph
 
@@ -39,6 +42,7 @@ class ApiContractTests(unittest.TestCase):
         app.include_router(entries_routes.router, prefix="/entries")
         app.include_router(graph_routes.router, prefix="/graph")
         app.include_router(mem_routes.router, prefix="/mem")
+        app.include_router(remote_routes.router, prefix="/remote")
         app.include_router(remote_sync_routes.router, prefix="/remote-sync")
         app.include_router(retrieve_routes.router, prefix="/retrieve")
 
@@ -55,8 +59,9 @@ class ApiContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         entries_routes._graph = self._route_graphs[0]
         graph_routes._graph = self._route_graphs[1]
-        remote_sync_routes._graph = self._route_graphs[2]
-        retrieve_routes._graph = self._route_graphs[3]
+        remote_routes._graph = self._route_graphs[2]
+        remote_sync_routes._graph = self._route_graphs[3]
+        retrieve_routes._graph = self._route_graphs[4]
         self.graph.close()
         self.temp_dir.cleanup()
 
@@ -190,6 +195,56 @@ class ApiContractTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), status)
+
+    def test_remote_routes_return_declared_contracts_without_llm_calls(self) -> None:
+        entry = self.graph.add(
+            "Remote Search Target",
+            content="Remote API contract content.",
+            entry_type=EntryType.capability,
+        )
+
+        search = self.client.get("/remote/search?q=contract")
+        self.assertEqual(search.status_code, 200)
+        self.assertEqual(search.json()[0]["id"], entry.id)
+        self.assertIn("snippet", search.json()[0])
+
+        overview = self.client.get("/remote/graph")
+        self.assertEqual(overview.status_code, 200)
+        self.assertEqual(len(overview.json()["nodes"]), 1)
+        self.assertEqual(overview.json()["unreviewed_nodes"], 1)
+
+        with bind_session_factory(self.graph._session_factory):
+            feedback = self.client.post(
+                "/remote/feedback",
+                json={
+                    "session_id": "remote-contract",
+                    "content": "Stored remote feedback.",
+                    "tags": ["contract"],
+                },
+            )
+            self.assertEqual(feedback.status_code, 201)
+            self.assertTrue(feedback.json()["stored"])
+
+            submitted = self.client.post(
+                "/remote/submit",
+                json={
+                    "session_id": "remote-contract",
+                    "title": "Contract Submission",
+                    "content": "Reusable submitted knowledge.",
+                },
+            )
+            self.assertEqual(submitted.status_code, 201)
+            self.assertEqual(submitted.json()["tag"], "pending-distillation")
+
+            inbox = self.client.get("/remote/inbox?session_id=remote-contract")
+            self.assertEqual(inbox.status_code, 200)
+            self.assertEqual(inbox.json()[0]["title"], "Contract Submission")
+
+        with patch.dict("os.environ", {}, clear=True):
+            chat = self.client.post("/remote/chat", json={"message": "hello"})
+            distill = self.client.post("/remote/distill", json={"dry_run": True})
+        self.assertEqual(chat.status_code, 503)
+        self.assertEqual(distill.status_code, 503)
 
 
 if __name__ == "__main__":

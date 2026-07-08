@@ -25,6 +25,16 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from api.schemas import (
+    RemoteAttachedSearchResponse,
+    RemoteChatResponse,
+    RemoteDistillResponse,
+    RemoteEntrySummary,
+    RemoteFeedbackResponse,
+    RemoteGraphOverviewResponse,
+    RemoteInboxItem,
+    RemoteSubmitResponse,
+)
 from core.app_state import graph as _graph
 from core.memory.memgraph import MemGraph
 from core.retrieval.progressive import ProgressiveRetriever
@@ -289,6 +299,7 @@ def remote_instructions(request: Request) -> PlainTextResponse:
 
 @router.post(
     "/chat",
+    response_model=RemoteChatResponse,
     summary="Chat with the orchestrator agent",
     tags=["remote"],
 )
@@ -324,6 +335,7 @@ def remote_chat(body: ChatRequest) -> dict:
 
 @router.get(
     "/search",
+    response_model=list[RemoteEntrySummary],
     summary="Search the knowledge graph",
     tags=["remote"],
 )
@@ -423,6 +435,7 @@ def _summarize_entry(entry, snippet_words: int = 40) -> dict:
 
 @router.get(
     "/graph",
+    response_model=RemoteGraphOverviewResponse,
     summary="Graph statistics and full node/edge list",
     tags=["remote"],
 )
@@ -489,6 +502,7 @@ def _build_progressive_hints(entry_id: str, counts: dict) -> dict:
 
 @router.get(
     "/entry/{entry_id}/heuristics",
+    response_model=RemoteAttachedSearchResponse,
     summary="Search L3 heuristics attached to an entry",
     tags=["remote"],
 )
@@ -538,6 +552,7 @@ def remote_get_heuristics(
 
 @router.get(
     "/entry/{entry_id}/constraints",
+    response_model=RemoteAttachedSearchResponse,
     summary="Search L4 constraints attached to an entry",
     tags=["remote"],
 )
@@ -579,6 +594,7 @@ def remote_get_constraints(
 
 @router.get(
     "/entry/{entry_id}/related",
+    response_model=list[dict],
     summary="Get entries related to an entry via BFS",
     tags=["remote"],
 )
@@ -602,6 +618,7 @@ def remote_get_related(
 
 @router.post(
     "/feedback",
+    response_model=RemoteFeedbackResponse,
     status_code=201,
     summary="Submit feedback as a memory trace (and optionally update an entry)",
     tags=["remote"],
@@ -652,6 +669,7 @@ _INBOX_TAG = "pending-distillation"
 
 @router.post(
     "/submit",
+    response_model=RemoteSubmitResponse,
     status_code=201,
     summary="Submit raw knowledge for later distillation into the graph",
     tags=["remote"],
@@ -707,6 +725,7 @@ def remote_submit(body: SubmitRequest) -> dict:
 
 @router.get(
     "/inbox",
+    response_model=list[RemoteInboxItem],
     summary="List pending knowledge submissions awaiting distillation",
     tags=["remote"],
 )
@@ -740,6 +759,7 @@ def remote_inbox(session_id: Optional[str] = None, limit: int = 50) -> list[dict
 
 @router.post(
     "/distill",
+    response_model=RemoteDistillResponse,
     summary="Distil pending inbox submissions into knowledge graph nodes",
     tags=["remote"],
 )
