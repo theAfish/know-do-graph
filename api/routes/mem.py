@@ -21,7 +21,11 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from api.schemas import EdgeListResponse, Entry, MemoryTraceListResponse, PaginationMeta
+from core.memory.memgraph import MemEntry
+from core.schemas.edge import Edge
 
 router = APIRouter()
 
@@ -33,25 +37,25 @@ router = APIRouter()
 
 class AddRequest(BaseModel):
     content: str
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
     success: Optional[bool] = None
 
 
 class MessagesRequest(BaseModel):
     messages: list[dict[str, Any]]
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
     as_single_trace: bool = True
 
 
 class RawIngestRequest(BaseModel):
     data: Any
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
     as_single_trace: bool = True
 
 
 class PromoteRequest(BaseModel):
     entry_type: str = "generic"
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
 
 
 class ConnectRequest(BaseModel):
@@ -59,7 +63,7 @@ class ConnectRequest(BaseModel):
     target_id: str
     relation: str = "related_memory"
     weight: float = 1.0
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # ------------------------------------------------------------------
@@ -75,27 +79,32 @@ def list_sessions():
     return MemGraph.list_sessions()
 
 
-@router.get("/{session_id}", response_model=list[dict], tags=["mem"])
+@router.get("/{session_id}", response_model=MemoryTraceListResponse, tags=["mem"])
 def list_traces(session_id: str):
     """List all memory traces for a session."""
     from core.memory.memgraph import MemGraph
 
     mg = MemGraph(session_id)
-    return [e.model_dump(mode="json") for e in mg.list()]
+    items = mg.list()
+    return {
+        "items": items,
+        "pagination": PaginationMeta(limit=len(items), count=len(items)),
+        "session_id": session_id,
+    }
 
 
-@router.post("/{session_id}/add", response_model=dict, status_code=201, tags=["mem"])
+@router.post("/{session_id}/add", response_model=MemEntry, status_code=201, tags=["mem"])
 def add_trace(session_id: str, body: AddRequest):
     """Add a single plain-text observation."""
     from core.memory.memgraph import MemGraph
 
     mg = MemGraph(session_id)
     entry = mg.add(body.content, tags=body.tags, success=body.success)
-    return entry.model_dump(mode="json")
+    return entry
 
 
 @router.post(
-    "/{session_id}/ingest/openai", response_model=list[dict], status_code=201, tags=["mem"]
+    "/{session_id}/ingest/openai", response_model=list[MemEntry], status_code=201, tags=["mem"]
 )
 def ingest_openai(session_id: str, body: MessagesRequest):
     """Ingest an OpenAI-style ``[{"role": ..., "content": ...}]`` messages list."""
@@ -105,11 +114,11 @@ def ingest_openai(session_id: str, body: MessagesRequest):
     entries = mg.ingest_openai_messages(
         body.messages, tags=body.tags, as_single_trace=body.as_single_trace
     )
-    return [e.model_dump(mode="json") for e in entries]
+    return entries
 
 
 @router.post(
-    "/{session_id}/ingest/langchain", response_model=list[dict], status_code=201, tags=["mem"]
+    "/{session_id}/ingest/langchain", response_model=list[MemEntry], status_code=201, tags=["mem"]
 )
 def ingest_langchain(session_id: str, body: MessagesRequest):
     """Ingest LangChain-style message objects (normalised to role/content dicts)."""
@@ -119,11 +128,11 @@ def ingest_langchain(session_id: str, body: MessagesRequest):
     entries = mg.ingest_langchain_messages(
         body.messages, tags=body.tags, as_single_trace=body.as_single_trace
     )
-    return [e.model_dump(mode="json") for e in entries]
+    return entries
 
 
 @router.post(
-    "/{session_id}/ingest/autogen", response_model=list[dict], status_code=201, tags=["mem"]
+    "/{session_id}/ingest/autogen", response_model=list[MemEntry], status_code=201, tags=["mem"]
 )
 def ingest_autogen(session_id: str, body: MessagesRequest):
     """Ingest AutoGen / multi-agent conversation records (``name`` + ``content`` dicts)."""
@@ -133,10 +142,12 @@ def ingest_autogen(session_id: str, body: MessagesRequest):
     entries = mg.ingest_autogen_messages(
         body.messages, tags=body.tags, as_single_trace=body.as_single_trace
     )
-    return [e.model_dump(mode="json") for e in entries]
+    return entries
 
 
-@router.post("/{session_id}/ingest/raw", response_model=list[dict], status_code=201, tags=["mem"])
+@router.post(
+    "/{session_id}/ingest/raw", response_model=list[MemEntry], status_code=201, tags=["mem"]
+)
 def ingest_raw(session_id: str, body: RawIngestRequest):
     """Ingest arbitrary JSON.
 
@@ -172,7 +183,7 @@ def ingest_raw(session_id: str, body: RawIngestRequest):
     else:
         entry = mg.add(str(data), tags=body.tags)
         entries = [entry]
-    return [e.model_dump(mode="json") for e in entries]
+    return entries
 
 
 @router.delete("/{session_id}/{mem_id}", status_code=204, tags=["mem"])
@@ -185,15 +196,19 @@ def delete_trace(session_id: str, mem_id: str):
         raise HTTPException(status_code=404, detail="Memory trace not found")
 
 
-@router.get("/{session_id}/edges", response_model=list[dict], tags=["mem"])
+@router.get("/{session_id}/edges", response_model=EdgeListResponse, tags=["mem"])
 def list_memory_edges(session_id: str, mem_id: Optional[str] = None):
     """List memory-to-memory edges touching nodes in a session."""
     from core.memory.memgraph import MemGraph
 
-    return [edge.model_dump(mode="json") for edge in MemGraph(session_id).edges(mem_id)]
+    items = MemGraph(session_id).edges(mem_id)
+    return {
+        "items": items,
+        "pagination": PaginationMeta(limit=len(items), count=len(items)),
+    }
 
 
-@router.post("/{session_id}/edges", response_model=dict, status_code=201, tags=["mem"])
+@router.post("/{session_id}/edges", response_model=Edge, status_code=201, tags=["mem"])
 def connect_memory(session_id: str, body: ConnectRequest):
     """Create a typed edge between two memory nodes."""
     from core.memory.memgraph import MemGraph
@@ -208,10 +223,10 @@ def connect_memory(session_id: str, body: ConnectRequest):
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return edge.model_dump(mode="json")
+    return edge
 
 
-@router.post("/{session_id}/{mem_id}/promote", response_model=dict, tags=["mem"])
+@router.post("/{session_id}/{mem_id}/promote", response_model=Entry, tags=["mem"])
 def promote_trace(session_id: str, mem_id: str, body: PromoteRequest):
     """Promote a memory trace into a full Know-Do Graph entry."""
     from agents.maintenance_agent.agent import MaintenanceAgent
@@ -229,4 +244,4 @@ def promote_trace(session_id: str, mem_id: str, body: PromoteRequest):
     )
     if not entry:
         raise HTTPException(status_code=404, detail="Memory trace not found")
-    return entry.model_dump(mode="json")
+    return entry

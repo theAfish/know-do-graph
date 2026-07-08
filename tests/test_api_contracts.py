@@ -9,8 +9,10 @@ from fastapi.testclient import TestClient
 
 from api.routes import entries as entries_routes
 from api.routes import graph as graph_routes
+from api.routes import mem as mem_routes
+from api.routes import remote_sync as remote_sync_routes
 from api.routes import retrieve as retrieve_routes
-from core.storage.database import get_db
+from core.storage.database import bind_session_factory, get_db
 from know_do_graph import EdgeRelation, EntryType, KnowDoGraph
 
 
@@ -22,15 +24,19 @@ class ApiContractTests(unittest.TestCase):
         self._route_graphs = (
             entries_routes._graph,
             graph_routes._graph,
+            remote_sync_routes._graph,
             retrieve_routes._graph,
         )
         entries_routes._graph = self.graph._graph
         graph_routes._graph = self.graph._graph
+        remote_sync_routes._graph = self.graph._graph
         retrieve_routes._graph = self.graph._graph
 
         app = FastAPI()
         app.include_router(entries_routes.router, prefix="/entries")
         app.include_router(graph_routes.router, prefix="/graph")
+        app.include_router(mem_routes.router, prefix="/mem")
+        app.include_router(remote_sync_routes.router, prefix="/remote-sync")
         app.include_router(retrieve_routes.router, prefix="/retrieve")
 
         def override_get_db():
@@ -46,7 +52,8 @@ class ApiContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         entries_routes._graph = self._route_graphs[0]
         graph_routes._graph = self._route_graphs[1]
-        retrieve_routes._graph = self._route_graphs[2]
+        remote_sync_routes._graph = self._route_graphs[2]
+        retrieve_routes._graph = self._route_graphs[3]
         self.graph.close()
         self.temp_dir.cleanup()
 
@@ -99,6 +106,61 @@ class ApiContractTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body[0]["entry_type"], "capability")
         self.assertEqual(body[0]["_level"], "L1")
+
+    def test_memory_routes_return_declared_contracts(self) -> None:
+        with bind_session_factory(self.graph._session_factory):
+            first = self.client.post(
+                "/mem/api-session/add",
+                json={"content": "First useful trace", "tags": ["api"]},
+            )
+            second = self.client.post(
+                "/mem/api-session/add",
+                json={"content": "Second useful trace", "tags": ["api"]},
+            )
+            self.assertEqual(first.status_code, 201)
+            self.assertEqual(second.status_code, 201)
+
+            listed = self.client.get("/mem/api-session")
+            self.assertEqual(listed.status_code, 200)
+            listed_body = listed.json()
+            self.assertEqual(listed_body["session_id"], "api-session")
+            self.assertEqual(listed_body["pagination"]["count"], 2)
+            self.assertEqual(len(listed_body["items"]), 2)
+
+            connected = self.client.post(
+                "/mem/api-session/edges",
+                json={
+                    "source_id": first.json()["id"],
+                    "target_id": second.json()["id"],
+                    "relation": "related_memory",
+                },
+            )
+            self.assertEqual(connected.status_code, 201)
+            self.assertEqual(connected.json()["relation"], "related_memory")
+
+            edges = self.client.get("/mem/api-session/edges")
+            self.assertEqual(edges.status_code, 200)
+            self.assertEqual(edges.json()["pagination"]["count"], 1)
+
+    def test_remote_sync_source_routes_return_declared_contracts(self) -> None:
+        entry = self.graph.add("Remote Source Target")
+
+        attached = self.client.put(
+            f"/remote-sync/{entry.id}/source",
+            json={"url": "https://example.com/source.md", "sync_now": False},
+        )
+        self.assertEqual(attached.status_code, 200)
+        self.assertEqual(attached.json()["remote_source"]["kind"], "http")
+        self.assertIsNone(attached.json()["result"])
+
+        linked = self.client.get("/remote-sync/")
+        self.assertEqual(linked.status_code, 200)
+        self.assertEqual(linked.json()[0]["entry_id"], entry.id)
+        self.assertEqual(linked.json()[0]["remote_source"]["url"], "https://example.com/source.md")
+
+        detached = self.client.delete(f"/remote-sync/{entry.slug}/source")
+        self.assertEqual(detached.status_code, 200)
+        self.assertEqual(detached.json(), {"detached": True, "entry_id": entry.id})
 
 
 if __name__ == "__main__":

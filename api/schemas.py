@@ -4,8 +4,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.memory.memgraph import MemEntry
 from core.schemas.edge import Edge
-from core.schemas.entry import Entry, EntryType
+from core.schemas.entry import Entry, EntryType, RemoteSource
 
 
 class PaginationMeta(BaseModel):
@@ -105,3 +106,50 @@ class ProgressiveEntry(Entry):
     model_config = ConfigDict(populate_by_name=True)
 
     level: str | None = Field(default=None, validation_alias="_level", serialization_alias="_level")
+
+
+class MemoryTraceListResponse(BaseModel):
+    items: list[MemEntry]
+    pagination: PaginationMeta
+    session_id: str
+
+
+class RemoteSyncResult(BaseModel):
+    entry_id: str
+    title: str
+    status: str
+    detail: str
+    bytes_fetched: int
+    new_hash: str | None = None
+    fetched_at: str | None = None
+
+
+class RemoteLinkedEntry(BaseModel):
+    entry_id: str
+    slug: str
+    title: str
+    remote_source: RemoteSource
+
+
+class RemoteSyncAllResponse(BaseModel):
+    checked: int
+    updated: int
+    unchanged: int
+    errors: int
+    results: list[RemoteSyncResult]
+
+
+class RemoteSyncOneResponse(BaseModel):
+    result: RemoteSyncResult
+    remote_source: RemoteSource
+    autolink: dict[str, Any] | None = None
+
+
+class RemoteSourceUpdateResponse(BaseModel):
+    remote_source: RemoteSource
+    result: RemoteSyncResult | None = None
+
+
+class RemoteSourceDetachResponse(BaseModel):
+    detached: bool
+    entry_id: str

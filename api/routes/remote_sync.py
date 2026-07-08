@@ -19,6 +19,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from api.schemas import (
+    RemoteLinkedEntry,
+    RemoteSourceDetachResponse,
+    RemoteSourceUpdateResponse,
+    RemoteSyncAllResponse,
+    RemoteSyncOneResponse,
+)
 from core import events as _events
 from core.app_state import graph as _graph
 from core.schemas.entry import RemoteSource
@@ -86,7 +93,7 @@ class AttachSourceRequest(BaseModel):
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
-@router.get("/")
+@router.get("/", response_model=list[RemoteLinkedEntry])
 def list_linked_entries(db: Session = Depends(get_db)) -> list[dict]:
     """List every entry that mirrors an upstream source."""
     out: list[dict] = []
@@ -105,7 +112,7 @@ def list_linked_entries(db: Session = Depends(get_db)) -> list[dict]:
     return out
 
 
-@router.post("/all")
+@router.post("/all", response_model=RemoteSyncAllResponse)
 async def sync_all_endpoint(force: bool = False) -> dict:
     """Sync every entry whose remote source is due (or all when ``force=true``)."""
     results = await sync_all_due(force=force)
@@ -119,7 +126,7 @@ async def sync_all_endpoint(force: bool = False) -> dict:
     return summary
 
 
-@router.post("/{id_or_slug}")
+@router.post("/{id_or_slug}", response_model=RemoteSyncOneResponse)
 async def sync_one_endpoint(
     id_or_slug: str,
     force: bool = True,
@@ -160,7 +167,7 @@ async def sync_one_endpoint(
     }
 
 
-@router.put("/{id_or_slug}/source")
+@router.put("/{id_or_slug}/source", response_model=RemoteSourceUpdateResponse)
 async def attach_source(
     id_or_slug: str,
     body: AttachSourceRequest,
@@ -224,7 +231,7 @@ async def attach_source(
     }
 
 
-@router.delete("/{id_or_slug}/source")
+@router.delete("/{id_or_slug}/source", response_model=RemoteSourceDetachResponse)
 def detach_source(id_or_slug: str, db: Session = Depends(get_db)) -> dict:
     """Remove the remote source link from an entry (content is preserved)."""
     repo, entry = _resolve_entry(db, id_or_slug)
