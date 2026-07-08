@@ -3,10 +3,12 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from api.routes import agent as agent_routes
 from api.routes import entries as entries_routes
 from api.routes import graph as graph_routes
 from api.routes import mem as mem_routes
@@ -33,6 +35,7 @@ class ApiContractTests(unittest.TestCase):
         retrieve_routes._graph = self.graph._graph
 
         app = FastAPI()
+        app.include_router(agent_routes.router, prefix="/agent")
         app.include_router(entries_routes.router, prefix="/entries")
         app.include_router(graph_routes.router, prefix="/graph")
         app.include_router(mem_routes.router, prefix="/mem")
@@ -161,6 +164,32 @@ class ApiContractTests(unittest.TestCase):
         detached = self.client.delete(f"/remote-sync/{entry.slug}/source")
         self.assertEqual(detached.status_code, 200)
         self.assertEqual(detached.json(), {"detached": True, "entry_id": entry.id})
+
+    def test_agent_routes_return_declared_contracts_without_llm_calls(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            missing_key = self.client.post("/agent/graph/chat", json={"message": "hello"})
+        self.assertEqual(missing_key.status_code, 503)
+
+        job_id = "contract-job"
+        status = {
+            "job_id": job_id,
+            "status": "completed",
+            "session_id": "api-session",
+            "progress": {"completed": 1, "total": 1, "percent": 100},
+            "results": [{"entry_id": "entry-1"}],
+            "errors": [],
+            "summary": "done",
+        }
+        with agent_routes._memory_review_jobs_lock:
+            agent_routes._memory_review_jobs[job_id] = status
+        try:
+            response = self.client.get(f"/agent/review/memory/{job_id}")
+        finally:
+            with agent_routes._memory_review_jobs_lock:
+                agent_routes._memory_review_jobs.pop(job_id, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), status)
 
 
 if __name__ == "__main__":

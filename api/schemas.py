@@ -153,3 +153,23 @@ class RemoteSourceUpdateResponse(BaseModel):
 class RemoteSourceDetachResponse(BaseModel):
     detached: bool
     entry_id: str
+
+
+class AgentTextResponse(BaseModel):
+    response: str
+
+
+class AgentReviewProgress(BaseModel):
+    completed: int
+    total: int
+    percent: int
+
+
+class AgentMemoryReviewJob(BaseModel):
+    job_id: str
+    status: str
+    session_id: str | None = None
+    progress: AgentReviewProgress
+    results: list[dict[str, Any]]
+    errors: list[str]
+    summary: str
