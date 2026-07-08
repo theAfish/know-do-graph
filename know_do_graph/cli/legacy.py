@@ -107,7 +107,7 @@ app.add_typer(entry_app, name="entry")
 def entry_add(
     title: str = typer.Argument(..., help="Entry title"),
     content: str = typer.Option("", "--content", "-c", help="Entry body (wiki text)"),
-    entry_type: str = typer.Option("generic", "--type", "-t", help="Entry type"),
+    entry_type: str = typer.Option("capability", "--type", "-t", help="Entry type"),
     tags: str = typer.Option("", "--tags", help="Comma-separated tags"),
     source: str = typer.Option(None, "--source", "-s", help="Source provenance URL/path"),
 ) -> None:
@@ -243,7 +243,7 @@ app.add_typer(extract_app, name="extract")
 @extract_app.command("file")
 def extract_file(
     path: str = typer.Argument(..., help="File or directory to extract from"),
-    entry_type: str = typer.Option("generic", "--type", "-t"),
+    entry_type: str = typer.Option("capability", "--type", "-t"),
     tags: str = typer.Option("", "--tags"),
     resolve: bool = typer.Option(
         True, "--resolve/--no-resolve", help="Resolve [[wikilinks]] after extraction"
@@ -384,7 +384,7 @@ def mem_list(
 def mem_promote(
     mem_id: str = typer.Argument(..., help="Memory trace ID"),
     session: str = typer.Option("default", "--session"),
-    entry_type: str = typer.Option("generic", "--type", "-t"),
+    entry_type: str = typer.Option("capability", "--type", "-t"),
 ) -> None:
     """Promote a Mem-Graph trace into a full Know-Do Graph entry."""
     _init()

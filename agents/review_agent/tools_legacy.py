@@ -315,7 +315,7 @@ def distill_memory(
             SkillLevel.L4: EntryType.constraint,
         }
         allowed_types = {
-            SkillLevel.L1: {EntryType.capability, EntryType.workflow},
+            SkillLevel.L1: {EntryType.capability},
             SkillLevel.L2: {EntryType.procedure},
             SkillLevel.L3: {EntryType.heuristic},
             SkillLevel.L4: {EntryType.constraint},
@@ -800,15 +800,8 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
                         "enum": [
                             "capability",
                             "procedure",
-                            "workflow",
-                            "tool",
-                            "repository",
-                            "environment",
-                            "dependency",
-                            "data",
-                            "analytical",
-                            "memory",
-                            "generic",
+                            "heuristic",
+                            "constraint",
                         ],
                     },
                     "tags": {"type": "array", "items": {"type": "string"}},
@@ -1036,10 +1029,9 @@ MEMORY_REVIEW_TOOL_SCHEMAS: list[dict] = [
                     },
                     "entry_type": {
                         "type": "string",
-                        "enum": ["capability", "workflow", "procedure", "heuristic", "constraint"],
+                        "enum": ["capability", "procedure", "heuristic", "constraint"],
                         "description": (
-                            "Optional concrete node type. L1 allows capability/workflow; "
-                            "other levels have one matching type."
+                            "Optional canonical node type. Each L1-L4 level has one matching type."
                         ),
                     },
                     "title": {"type": "string"},

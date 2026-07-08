@@ -10,7 +10,7 @@ from core.retrieval import vector_store
 from core.retrieval.embedder import build_embedding_text, get_default_embedder
 from core.retrieval.fusion import reciprocal_rank_fusion, trust_multiplier, usage_bump
 from core.schemas.edge import Edge, EdgeRelation
-from core.schemas.entry import Entry, EntryType
+from core.schemas.entry import Entry, EntryType, canonical_entry_type, legacy_entry_subtype
 from core.storage.models import EdgeModel, EntryModel
 
 _STOP_WORDS = {
@@ -185,7 +185,7 @@ class RetrievalEngine:
                 if row is None:
                     continue
                 d = row.to_dict()
-                if entry_type and d.get("entry_type") != entry_type.value:
+                if entry_type and not _matches_entry_type(d, entry_type):
                     continue
                 if tags and not any(t in d["tags"] for t in tags):
                     continue
@@ -224,11 +224,13 @@ class RetrievalEngine:
     ) -> list[Entry]:
         q = self._db.query(EntryModel)
         if entry_type:
-            q = q.filter(EntryModel.entry_type == entry_type.value)
+            q = q.filter(EntryModel.entry_type == canonical_entry_type(entry_type).value)
         rows = q.limit(500).all()
         out: list[Entry] = []
         for row in rows:
             d = row.to_dict()
+            if entry_type and not _matches_entry_type(d, entry_type):
+                continue
             if tags and not any(t in d["tags"] for t in tags):
                 continue
             out.append(Entry(**d))
@@ -249,7 +251,7 @@ class RetrievalEngine:
         """
         q = self._db.query(EntryModel)
         if entry_type:
-            q = q.filter(EntryModel.entry_type == entry_type.value)
+            q = q.filter(EntryModel.entry_type == canonical_entry_type(entry_type).value)
 
         tokens = [t for t in query.lower().split() if len(t) > 2 and t not in _STOP_WORDS]
         if not tokens:
@@ -275,6 +277,8 @@ class RetrievalEngine:
         scored: list[tuple[int, str]] = []
         for row in rows:
             d = row.to_dict()
+            if entry_type and not _matches_entry_type(d, entry_type):
+                continue
             if tags and not any(t in d["tags"] for t in tags):
                 continue
             title = (d.get("title") or "").lower()
@@ -347,3 +351,13 @@ class RetrievalEngine:
             tags=entry.tags,
             content=entry.content,
         )
+
+
+def _matches_entry_type(data: dict, requested: EntryType) -> bool:
+    requested_subtype = legacy_entry_subtype(requested)
+    if data.get("entry_type") != canonical_entry_type(requested).value:
+        return False
+    if not requested_subtype:
+        return True
+    metadata = data.get("metadata") or {}
+    return metadata.get("subtype") == requested_subtype

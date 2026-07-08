@@ -79,7 +79,7 @@ class KnowDoGraph:
         title: str,
         *,
         content: str = "",
-        entry_type: EntryType | str = EntryType.generic,
+        entry_type: EntryType | str = EntryType.capability,
         tags: Optional[Iterable[str]] = None,
         aliases: Optional[Iterable[str]] = None,
         metadata: EntryMetadata | dict[str, Any] | None = None,

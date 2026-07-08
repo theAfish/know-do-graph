@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -96,7 +97,45 @@ def _m002_indexes(conn: Connection) -> None:
         pass
 
 
+_LEGACY_ENTRY_TYPE_TO_CANONICAL = {
+    "workflow": "capability",
+    "tool": "procedure",
+    "repository": "procedure",
+    "data": "procedure",
+    "environment": "constraint",
+    "dependency": "constraint",
+    "analytical": "heuristic",
+    "generic": "capability",
+}
+
+
+def _m003_normalize_public_entry_types(conn: Connection) -> None:
+    rows = conn.execute(text("SELECT id, entry_type, metadata_json FROM entries")).all()
+    for entry_id, entry_type, metadata_json in rows:
+        canonical = _LEGACY_ENTRY_TYPE_TO_CANONICAL.get(entry_type)
+        if canonical is None:
+            continue
+        try:
+            metadata = json.loads(metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        metadata.setdefault("subtype", entry_type)
+        conn.execute(
+            text(
+                "UPDATE entries "
+                "SET entry_type = :entry_type, metadata_json = :metadata_json "
+                "WHERE id = :id"
+            ),
+            {
+                "id": entry_id,
+                "entry_type": canonical,
+                "metadata_json": json.dumps(metadata),
+            },
+        )
+
+
 MIGRATIONS = [
     Migration(1, "entry compatibility columns", _m001_entry_compat_columns),
     Migration(2, "lookup indexes", _m002_indexes),
+    Migration(3, "normalize public entry types", _m003_normalize_public_entry_types),
 ]

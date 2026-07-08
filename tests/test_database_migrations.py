@@ -36,7 +36,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
             engine.dispose()
 
-        self.assertEqual([row[0] for row in migrations], [1, 2])
+        self.assertEqual([row[0] for row in migrations], [1, 2, 3])
         self.assertIn("ix_entries_entry_type", entry_indexes)
         self.assertIn("ix_entries_updated_at", entry_indexes)
         self.assertIn("ix_edges_source_target", edge_indexes)
@@ -61,6 +61,21 @@ class DatabaseMigrationTests(unittest.TestCase):
                 ")"
             )
             raw.execute(
+                "INSERT INTO entries "
+                "(id, title, slug, entry_type, content, tags, metadata_json, internal_refs) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "legacy-tool",
+                    "Legacy Tool",
+                    "legacy-tool",
+                    "tool",
+                    "Legacy tool content.",
+                    "[]",
+                    "{}",
+                    "[]",
+                ),
+            )
+            raw.execute(
                 "CREATE TABLE edges ("
                 "id TEXT PRIMARY KEY, "
                 "source_id TEXT NOT NULL, "
@@ -80,11 +95,16 @@ class DatabaseMigrationTests(unittest.TestCase):
             with engine.connect() as conn:
                 columns = {row[1] for row in conn.execute(text("PRAGMA table_info(entries)"))}
                 migrations = conn.execute(text("SELECT COUNT(*) FROM schema_migrations")).scalar()
+                migrated = conn.execute(
+                    text("SELECT entry_type, metadata_json FROM entries WHERE id = 'legacy-tool'")
+                ).one()
 
             engine.dispose()
 
         self.assertTrue({"aliases", "scripts_json", "assets_json", "embedding_hash"} <= columns)
-        self.assertEqual(migrations, 2)
+        self.assertEqual(migrations, 3)
+        self.assertEqual(migrated[0], "procedure")
+        self.assertIn('"subtype": "tool"', migrated[1])
 
 
 if __name__ == "__main__":

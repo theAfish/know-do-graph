@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from core.utils.slug import slug_from_title
 
@@ -41,6 +41,8 @@ class RemoteSource(BaseModel):
 class EntryType(str, Enum):
     capability = "capability"
     procedure = "procedure"
+    # Legacy public types are accepted for compatibility and normalized to one
+    # of the four canonical knowledge-node types on Entry construction.
     workflow = "workflow"
     tool = "tool"
     repository = "repository"
@@ -48,11 +50,55 @@ class EntryType(str, Enum):
     dependency = "dependency"
     data = "data"
     analytical = "analytical"
+    # Internal/transient memory traces remain distinct so MemGraph and review
+    # policy internals can keep excluding raw session memory.
     memory = "memory"
     # Hierarchical-memory layers (see SkillLevel).
     heuristic = "heuristic"  # L3: operational experience / empirical guidance
     constraint = "constraint"  # L4: known failure modes / limitations
     generic = "generic"
+
+
+CANONICAL_ENTRY_TYPES = (
+    EntryType.capability,
+    EntryType.procedure,
+    EntryType.heuristic,
+    EntryType.constraint,
+)
+
+PUBLIC_ENTRY_TYPE_VALUES = tuple(entry_type.value for entry_type in CANONICAL_ENTRY_TYPES)
+
+LEGACY_ENTRY_TYPE_TO_CANONICAL: dict[str, EntryType] = {
+    "capability": EntryType.capability,
+    "procedure": EntryType.procedure,
+    "heuristic": EntryType.heuristic,
+    "constraint": EntryType.constraint,
+    "workflow": EntryType.capability,
+    "tool": EntryType.procedure,
+    "repository": EntryType.procedure,
+    "data": EntryType.procedure,
+    "environment": EntryType.constraint,
+    "dependency": EntryType.constraint,
+    "analytical": EntryType.heuristic,
+    "generic": EntryType.capability,
+}
+
+
+def canonical_entry_type(entry_type: "EntryType | str | None") -> EntryType:
+    """Return the canonical public type for a requested entry type."""
+    value = entry_type.value if isinstance(entry_type, EntryType) else (entry_type or "capability")
+    if value == EntryType.memory.value:
+        return EntryType.memory
+    return LEGACY_ENTRY_TYPE_TO_CANONICAL.get(str(value), EntryType.capability)
+
+
+def legacy_entry_subtype(entry_type: "EntryType | str | None") -> str | None:
+    """Return the pre-normalization subtype when it carries extra detail."""
+    value = entry_type.value if isinstance(entry_type, EntryType) else (entry_type or "")
+    canonical = canonical_entry_type(value)
+    if value and value != canonical.value and value != EntryType.memory.value:
+        return str(value)
+    return None
 
 
 class SkillLevel(str, Enum):
@@ -79,10 +125,10 @@ class SkillLevel(str, Enum):
 # and by progressive retrieval when ``skill_level`` is not set explicitly.
 DEFAULT_LEVEL_FOR_TYPE: dict[str, SkillLevel] = {
     "capability": SkillLevel.L1,
-    "workflow": SkillLevel.L1,
     "procedure": SkillLevel.L2,
     "heuristic": SkillLevel.L3,
     "constraint": SkillLevel.L4,
+    "memory": SkillLevel.L3,
 }
 
 
@@ -146,6 +192,9 @@ class EntryMetadata(BaseModel):
     # use ``implied_level(entry_type, skill_level)`` to derive it from the
     # entry_type via DEFAULT_LEVEL_FOR_TYPE.
     skill_level: Optional[SkillLevel] = None
+    # Previous or more specific type label when a legacy public type has been
+    # collapsed into the four canonical public types.
+    subtype: Optional[str] = None
     # Free-form metadata for L3 heuristics / L4 constraints:
     #   {domain: str, confidence: float, papers: [str], notes: str, ...}
     applicability: dict = Field(default_factory=dict)
@@ -283,7 +332,7 @@ class Entry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     slug: str = ""
-    entry_type: EntryType = EntryType.generic
+    entry_type: EntryType = EntryType.capability
     content: str = ""
     tags: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
@@ -291,6 +340,27 @@ class Entry(BaseModel):
     internal_refs: list[str] = Field(default_factory=list)
     scripts: list[ScriptAttachment] = Field(default_factory=list)
     assets: list[NodeAsset] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_public_type(cls, data):
+        if not isinstance(data, dict):
+            return data
+        raw_type = data.get("entry_type", EntryType.capability.value)
+        subtype = legacy_entry_subtype(raw_type)
+        canonical = canonical_entry_type(raw_type)
+        data = dict(data)
+        data["entry_type"] = canonical.value
+        if subtype:
+            metadata = data.get("metadata") or {}
+            if isinstance(metadata, EntryMetadata):
+                if metadata.subtype is None:
+                    metadata = metadata.model_copy(update={"subtype": subtype})
+            elif isinstance(metadata, dict):
+                metadata = dict(metadata)
+                metadata.setdefault("subtype", subtype)
+            data["metadata"] = metadata
+        return data
 
     def model_post_init(self, __context: object) -> None:
         if not self.slug:

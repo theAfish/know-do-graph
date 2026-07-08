@@ -1,20 +1,20 @@
 export const TYPE_COLORS = {
   capability: '#238636',
   procedure: '#1f6feb',
-  workflow: '#d29922',
-  tool: '#8957e5',
-  repository: '#bf8700',
-  environment: '#1a7f5a',
-  dependency: '#cf222e',
-  data: '#388bfd',
-  analytical: '#a371f7',
-  memory: '#6e7781',
   heuristic: '#db61a2',
   constraint: '#f85149',
+  workflow: '#238636',
+  tool: '#1f6feb',
+  repository: '#1f6feb',
+  data: '#1f6feb',
+  environment: '#f85149',
+  dependency: '#f85149',
+  analytical: '#db61a2',
+  memory: '#6e7781',
   generic: '#444c56',
 };
 
-export const ENTRY_TYPES = Object.keys(TYPE_COLORS);
+export const ENTRY_TYPES = ['capability', 'procedure', 'heuristic', 'constraint'];
 
 export const colorFor = (type) => TYPE_COLORS[type] || TYPE_COLORS.generic;
 

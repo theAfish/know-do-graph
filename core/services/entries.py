@@ -6,7 +6,13 @@ from sqlalchemy.orm import Session
 
 from core.graph.graph import KnowDoGraph
 from core.retrieval.retrieval import RetrievalEngine
-from core.schemas.entry import Entry, EntryMetadata, EntryType
+from core.schemas.entry import (
+    Entry,
+    EntryMetadata,
+    EntryType,
+    canonical_entry_type,
+    legacy_entry_subtype,
+)
 from core.services.errors import NotFoundError
 from core.storage.repository import EntryRepository
 
@@ -17,7 +23,7 @@ def create_entry(
     *,
     title: str,
     content: str = "",
-    entry_type: EntryType | str = EntryType.generic,
+    entry_type: EntryType | str = EntryType.capability,
     tags: Iterable[str] | None = None,
     aliases: Iterable[str] | None = None,
     metadata: EntryMetadata | dict[str, Any] | None = None,
@@ -51,7 +57,13 @@ def update_entry(
 ) -> Entry:
     current = resolve_required(db, graph, identifier)
     if "entry_type" in changes:
-        changes["entry_type"] = EntryType(changes["entry_type"])
+        subtype = legacy_entry_subtype(changes["entry_type"])
+        changes["entry_type"] = canonical_entry_type(changes["entry_type"])
+        if subtype:
+            metadata = (
+                _metadata(changes.get("metadata")) if "metadata" in changes else current.metadata
+            )
+            changes["metadata"] = metadata.model_copy(update={"subtype": subtype})
     if "metadata" in changes:
         changes["metadata"] = _metadata(changes["metadata"])
     updated = current.model_copy(update=changes, deep=True)
