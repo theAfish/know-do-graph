@@ -8,6 +8,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from core.utils.slug import slug_from_title
+
 
 class RemoteSource(BaseModel):
     """Link to an upstream file (e.g. a SKILL.md in another repo) that should be
@@ -292,7 +294,7 @@ class Entry(BaseModel):
 
     def model_post_init(self, __context: object) -> None:
         if not self.slug:
-            self.slug = _slug_from_title(self.title)
+            self.slug = slug_from_title(self.title)
         extracted = _extract_wikilinks(self.content)
         combined = list(dict.fromkeys(self.internal_refs + extracted))
         self.internal_refs = combined
@@ -374,7 +376,7 @@ _CHAR_SUBS: dict[str, str] = {
 }
 
 
-def _slug_from_title(title: str) -> str:
+def _legacy_slug_from_title(title: str) -> str:
     import unicodedata
 
     # Pre-substitute scientific symbols that have misleading NFKD decompositions.

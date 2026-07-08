@@ -178,6 +178,16 @@ class KnowDoGraph:
     def has_node(self, entry_id: str) -> bool:
         return self._g.has_node(entry_id)
 
+    def degree(self, entry_id: str) -> int:
+        """Return total in/out degree for an entry, or 0 when absent."""
+        if not self._g.has_node(entry_id):
+            return 0
+        return int(self._g.degree(entry_id))
+
+    def degree_map(self) -> dict[str, int]:
+        """Return total in/out degree for all nodes."""
+        return {node_id: int(degree) for node_id, degree in self._g.degree()}
+
     def get_subgraph(self, entry_id: str, depth: int = 2) -> nx.DiGraph:
         """Return an ego-subgraph centred on entry_id up to *depth* hops."""
         if entry_id not in self._g:
@@ -205,6 +215,16 @@ class KnowDoGraph:
             "edges": self._g.number_of_edges(),
             "is_dag": nx.is_directed_acyclic_graph(self._g),
             "unreviewed_nodes": self._g.graph["unreviewed_nodes"],
+        }
+
+    def full_dump(self) -> dict:
+        """Return serializable node and edge data for API/UI consumers."""
+        return {
+            "nodes": [{"id": node_id, **data} for node_id, data in self._g.nodes(data=True)],
+            "edges": [
+                {"source": source, "target": target, **data}
+                for source, target, data in self._g.edges(data=True)
+            ],
         }
 
     def rebuild_from_db(self, entries: list[Entry], edges: list[Edge]) -> None:

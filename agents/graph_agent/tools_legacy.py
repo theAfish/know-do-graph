@@ -10,16 +10,15 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
+from core.utils.slug import slug_from_title
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _slug(title: str) -> str:
-    slug = title.lower().strip()
-    slug = re.sub(r"[^\w\s-]", "", slug)
-    slug = re.sub(r"[\s_]+", "-", slug)
-    return re.sub(r"-+", "-", slug).strip("-")
+    return slug_from_title(title)
 
 
 # Tokens that suggest a title is a *concrete instance* of a more general skill
@@ -79,27 +78,28 @@ def create_entry(
     response includes the similar candidates so the agent can decide to merge
     or rename instead.
     """
-    from core.schemas.entry import Entry, EntryMetadata, EntryType
+    from core import app_state
+    from core.schemas.entry import EntryMetadata
+    from core.services.entries import create_entry as service_create_entry
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
 
+    g = graph or app_state.graph
     with SessionLocal() as db:
-        check = _check_generalization(title, db, graph)
+        check = _check_generalization(title, db, g)
         meta = EntryMetadata(
             source_provenance=source_provenance,
             needs_generalization=check["needs_generalization"],
         )
-        entry = Entry(
+        saved = service_create_entry(
+            db,
+            g,
             title=title,
             content=content,
-            entry_type=EntryType(entry_type),
+            entry_type=entry_type,
             tags=tags or [],
             aliases=aliases or [],
             metadata=meta,
         )
-        saved = EntryRepository(db).create(entry)
-    if graph is not None:
-        graph.add_entry(saved)
     return {
         "id": saved.id,
         "slug": saved.slug,
@@ -120,47 +120,39 @@ def update_entry(
 ) -> dict:
     """Update fields on an existing entry."""
     from core import app_state
-    from core.retrieval.retrieval import RetrievalEngine
-    from core.schemas.entry import EntryType
+    from core.services.entries import update_entry as service_update_entry
+    from core.services.errors import ServiceError
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
 
     g = graph or app_state.graph
+    changes = {}
+    if title is not None:
+        changes["title"] = title
+    if content is not None:
+        changes["content"] = content
+    if entry_type is not None:
+        changes["entry_type"] = entry_type
+    if tags is not None:
+        changes["tags"] = tags
+    if aliases is not None:
+        changes["aliases"] = aliases
     with SessionLocal() as db:
-        engine = RetrievalEngine(db, g)
-        entry = engine.resolve_identifier(entry_id)
-        if entry is None:
+        try:
+            saved = service_update_entry(db, g, entry_id, **changes)
+        except ServiceError:
             return {"error": f"Entry '{entry_id}' not found."}
-        if title is not None:
-            entry.title = title
-        if content is not None:
-            entry.content = content
-            entry.refresh_refs()
-        if entry_type is not None:
-            entry.entry_type = EntryType(entry_type)
-        if tags is not None:
-            entry.tags = tags
-        if aliases is not None:
-            entry.aliases = aliases
-        saved = EntryRepository(db).update(entry)
-    if graph is not None and saved:
-        graph.add_entry(saved)  # upsert node attributes
-    return (
-        {"id": saved.id, "slug": saved.slug, "title": saved.title}
-        if saved
-        else {"error": "Update failed."}
-    )
+    return {"id": saved.id, "slug": saved.slug, "title": saved.title}
 
 
 def delete_entry(entry_id: str, graph: Any = None) -> dict:
     """Delete an entry (node) and its associated edges."""
+    from core import app_state
+    from core.services.entries import delete_entry as service_delete_entry
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
 
+    g = graph or app_state.graph
     with SessionLocal() as db:
-        deleted = EntryRepository(db).delete(entry_id)
-    if deleted and graph is not None:
-        graph.remove_entry(entry_id)
+        deleted = service_delete_entry(db, g, entry_id)
     return {"deleted": deleted, "entry_id": entry_id}
 
 
@@ -244,38 +236,41 @@ def create_edge(
     its arguments or create the missing node first. This prevents the ghost
     "grey" placeholder nodes that networkx would otherwise auto-create.
     """
-    from core.retrieval.retrieval import RetrievalEngine
-    from core.schemas.edge import Edge, EdgeRelation
+    from core import app_state
+    from core.services.edges import connect_entries
+    from core.services.errors import NotFoundError, ServiceError, ValidationServiceError
     from core.storage.database import SessionLocal
-    from core.storage.repository import EdgeRepository
 
     try:
-        rel = EdgeRelation(relation)
-    except ValueError:
-        rel = EdgeRelation.wikilink
-
-    with SessionLocal() as db:
-        engine = RetrievalEngine(db, graph)
-        src = engine.resolve_identifier(source_id)
-        tgt = engine.resolve_identifier(target_id)
+        g = graph or app_state.graph
+        with SessionLocal() as db:
+            saved = connect_entries(
+                db,
+                g,
+                source_id,
+                target_id,
+                relation=relation,
+                weight=weight,
+            )
+    except NotFoundError:
         missing = []
-        if src is None:
-            missing.append(source_id)
-        if tgt is None:
-            missing.append(target_id)
-        if missing:
-            return {
-                "error": "edge_endpoint_not_found",
-                "missing": missing,
-                "hint": "Resolve source_id and target_id to existing entries (use search_entries / get_entry) or call create_entry first.",
-            }
-        if src.id == tgt.id:
-            return {"error": "self_loop_rejected", "entry_id": src.id}
+        with SessionLocal() as db:
+            from core.retrieval.retrieval import RetrievalEngine
 
-        edge = Edge(source_id=src.id, target_id=tgt.id, relation=rel, weight=weight)
-        saved = EdgeRepository(db).create(edge)
-    if graph is not None:
-        graph.add_edge(saved)
+            engine = RetrievalEngine(db, graph or app_state.graph)
+            if engine.resolve_identifier(source_id) is None:
+                missing.append(source_id)
+            if engine.resolve_identifier(target_id) is None:
+                missing.append(target_id)
+        return {
+            "error": "edge_endpoint_not_found",
+            "missing": missing,
+            "hint": "Resolve source_id and target_id to existing entries (use search_entries / get_entry) or call create_entry first.",
+        }
+    except ValidationServiceError:
+        return {"error": "self_loop_rejected", "entry_id": source_id}
+    except ServiceError as exc:
+        return exc.to_dict()
     return {
         "id": saved.id,
         "source_id": saved.source_id,
@@ -286,18 +281,17 @@ def create_edge(
 
 def delete_edge(edge_id: str, graph: Any = None) -> dict:
     """Delete an edge by its ID."""
+    from core import app_state
+    from core.services.edges import delete_edge as service_delete_edge
+    from core.services.errors import ServiceError
     from core.storage.database import SessionLocal
-    from core.storage.models import EdgeModel
-    from core.storage.repository import EdgeRepository
 
+    g = graph or app_state.graph
     with SessionLocal() as db:
-        model = db.get(EdgeModel, edge_id)
-        if model is None:
+        try:
+            deleted = service_delete_edge(db, g, edge_id)
+        except ServiceError:
             return {"error": f"Edge '{edge_id}' not found."}
-        src_id, tgt_id = model.source_id, model.target_id
-        deleted = EdgeRepository(db).delete(edge_id)
-        if deleted and graph is not None:
-            graph.remove_edge(src_id, tgt_id)
     return {"deleted": deleted, "edge_id": edge_id}
 
 
@@ -461,7 +455,7 @@ def get_graph_overview(sample_size: int = 15, graph: Any = None) -> dict:
     # Top connected nodes (by total degree in the in-memory graph)
     top_nodes: list[dict] = []
     try:
-        degree_map = dict(g._g.degree())  # type: ignore[attr-defined]
+        degree_map = g.degree_map()
         top_ids = sorted(degree_map, key=lambda k: degree_map[k], reverse=True)[:5]
         id_to_entry = {e.id: e for e in all_entries}
         top_nodes = [
@@ -755,52 +749,46 @@ def add_asset_to_entry(
     ``GET /entries/{entry_id}/assets/{folder}/{filename}``.
     """
     from core import app_state
-    from core.retrieval.retrieval import RetrievalEngine
     from core.schemas.entry import NodeAsset
+    from core.services.assets import add_or_replace_asset
+    from core.services.errors import ServiceError
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
 
     g = graph or app_state.graph
+    try:
+        asset = NodeAsset(
+            folder=folder,
+            filename=filename,
+            kind=kind,
+            content=content,
+            language=language,
+            mime_type=mime_type,
+            description=description,
+            requirements=requirements or [],
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+
     with SessionLocal() as db:
-        engine = RetrievalEngine(db, g)
-        entry = engine.resolve_identifier(entry_id)
-        if entry is None:
-            return {"error": f"Entry '{entry_id}' not found."}
         try:
-            asset = NodeAsset(
-                folder=folder,
-                filename=filename,
-                kind=kind,
-                content=content,
-                language=language,
-                mime_type=mime_type,
-                description=description,
-                requirements=requirements or [],
-            )
-        except ValueError as exc:
+            updated_id, saved_asset = add_or_replace_asset(db, g, entry_id, asset)
+        except ServiceError as exc:
             return {"error": str(exc)}
-        # Replace existing asset at same folder/filename
-        entry.assets = [
-            a
-            for a in entry.assets
-            if not (a.folder == asset.folder and a.filename == asset.filename)
-        ]
-        entry.assets.append(asset)
-        updated = EntryRepository(db).update(entry)
+        from core.retrieval.retrieval import RetrievalEngine
 
-    if g is not None and updated:
-        g.add_entry(updated)
+        updated = RetrievalEngine(db, g).resolve_identifier(updated_id)
 
+    total_assets = len(updated.assets) if updated is not None else 0
     return {
-        "id": updated.id,
-        "title": updated.title,
+        "id": updated_id,
+        "title": updated.title if updated is not None else "",
         "asset": {
-            "folder": asset.folder,
-            "filename": asset.filename,
-            "kind": asset.kind,
-            "download_url": f"/entries/{updated.id}/assets/{asset.folder}/{asset.filename}",
+            "folder": saved_asset.folder,
+            "filename": saved_asset.filename,
+            "kind": saved_asset.kind,
+            "download_url": f"/entries/{updated_id}/assets/{saved_asset.folder}/{saved_asset.filename}",
         },
-        "total_assets": len(updated.assets),
+        "total_assets": total_assets,
     }
 
 
@@ -979,49 +967,30 @@ def submit_feedback(
     agent_id:
         Identifier of the agent or human that submitted the feedback.
     """
-    from datetime import datetime, timezone
-
     from core import app_state
-    from core.retrieval.retrieval import RetrievalEngine
-    from core.schemas.entry import VerificationStatus
+    from core.services.errors import ServiceError
+    from core.services.feedback import record_feedback
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
-
-    verdict_to_status = {
-        "works": VerificationStatus.self_tested,
-        "peer_works": VerificationStatus.peer_reviewed,
-        "bugged": VerificationStatus.bugged,
-        "deprecated": VerificationStatus.deprecated,
-        "unclear": None,
-    }
-    if verdict not in verdict_to_status:
-        return {"error": f"verdict must be one of {sorted(verdict_to_status)}"}
 
     g = graph or app_state.graph
     with SessionLocal() as db:
-        engine = RetrievalEngine(db, g)
-        entry = engine.resolve_identifier(entry_id)
-        if entry is None:
-            return {"error": f"Entry '{entry_id}' not found."}
-
-        entry.metadata.feedback_log.append(
-            {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "agent_id": agent_id,
-                "verdict": verdict,
-                "note": note,
-                "evidence": evidence,
-            }
-        )
-        new_status = verdict_to_status[verdict]
-        if new_status is not None:
-            entry.metadata.verification_status = new_status
-        EntryRepository(db).update(entry)
+        try:
+            result = record_feedback(
+                db,
+                g,
+                entry_id,
+                verdict=verdict,
+                note=note,
+                evidence=evidence,
+                agent_id=agent_id,
+            )
+        except ServiceError as exc:
+            return {"error": str(exc)}
 
     return {
-        "entry_id": entry.id,
-        "verification_status": entry.metadata.verification_status.value,
-        "feedback_count": len(entry.metadata.feedback_log),
+        "entry_id": result["id"],
+        "verification_status": result["verification_status"],
+        "feedback_count": result["feedback_count"],
     }
 
 

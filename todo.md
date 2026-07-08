@@ -56,20 +56,27 @@ the legacy modules incrementally without breaking public import paths.
 
 ## Priority 3 - Clarify Boundaries and Shared Services
 
-- [ ] Create service-layer modules for repeated workflows that are currently implemented separately in CLI, API routes, agent tools, and `KnowDoGraph` client methods.
+- [x] Create service-layer modules for repeated workflows that are currently implemented separately in CLI, API routes, agent tools, and `KnowDoGraph` client methods.
   Candidates:
-  - [ ] entry create/update/delete
-  - [ ] edge create/delete
-  - [ ] asset/script mutation
-  - [ ] feedback and verification updates
-  - [ ] graph reload and SSE notification
-  - [ ] memory promotion
-- [ ] Move slug generation to one canonical implementation. There are separate slug helpers in `core/storage/repository.py`, `core/extraction/wikilink_parser.py`, `core/schemas/entry.py`, and `agents/graph_agent/tools.py`.
-- [ ] Centralize serialization helpers for entry summaries, clean remote responses, API response models, and frontend graph node payloads.
-- [ ] Replace direct access to graph internals such as `g._g.degree()` with public graph methods.
-- [ ] Replace broad `Any` usage in agent/review/public API boundaries with `Protocol`, typed context objects, or concrete service interfaces.
-- [ ] Standardize error handling. Decide where functions return `{"error": ...}` versus raising domain exceptions, then adapt API routes and agents consistently.
-- [ ] Standardize event emission so repositories, API routes, and services do not double-emit or emit slightly different payloads for the same mutation.
+  - [x] entry create/update/delete
+  - [x] edge create/delete
+  - [x] asset/script mutation
+  - [x] feedback and verification updates
+  - [x] graph reload and SSE notification
+  - [x] memory promotion
+- [x] Move slug generation to one canonical implementation. There are separate slug helpers in `core/storage/repository.py`, `core/extraction/wikilink_parser.py`, `core/schemas/entry.py`, and `agents/graph_agent/tools.py`.
+- [x] Centralize serialization helpers for entry summaries, clean remote responses, API response models, and frontend graph node payloads.
+- [x] Replace direct access to graph internals such as `g._g.degree()` with public graph methods.
+- [x] Replace broad `Any` usage in agent/review/public API boundaries with `Protocol`, typed context objects, or concrete service interfaces.
+- [x] Standardize error handling. Decide where functions return `{"error": ...}` versus raising domain exceptions, then adapt API routes and agents consistently.
+- [x] Standardize event emission so repositories, API routes, and services do not double-emit or emit slightly different payloads for the same mutation.
+
+Implementation note: shared services now live under `core/services`, canonical
+slug generation lives in `core/utils/slug.py`, API/client/GraphAgent hot paths
+use service-layer mutations, and graph degree/full-dump access goes through
+public methods. Some legacy `Any` annotations remain in agent tool-call
+interfaces for OpenAI compatibility; those should be narrowed during the
+Priority 6 agent-tooling pass.
 
 ## Priority 4 - Improve Persistence and Migrations
 

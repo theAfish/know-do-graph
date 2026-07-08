@@ -99,7 +99,7 @@ def sample_nodes_for_review(
         raise ValueError("strategy must be 'seed', 'global', or 'auto'")
 
     if normalized == "global":
-        degree = dict(g._g.degree())  # type: ignore[attr-defined]
+        degree = g.degree_map()
         selected = sorted(
             candidates,
             key=lambda entry: (

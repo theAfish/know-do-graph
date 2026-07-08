@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from core.schemas.edge import Edge
 from core.schemas.entry import Entry
+from core.utils.slug import slug_from_title
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class EntryRepository:
         entry.metadata.review_count = 0
         entry.metadata.modify_count = 0
         entry.metadata.last_reviewed_at = None
-        slug = _unique_slug(self._db, entry.slug or _slug(entry.title), entry.id)
+        slug = _unique_slug(self._db, entry.slug or slug_from_title(entry.title), entry.id)
         model = EntryModel(
             id=entry.id,
             title=entry.title,
@@ -113,7 +114,7 @@ class EntryRepository:
         self._db.refresh(model)
         saved = Entry(**model.to_dict())
         _refresh_embedding(self._db, saved, model)
-        _notify("node_added", {"id": saved.id, "title": saved.title, "slug": saved.slug})
+        _notify("node_added", _entry_event_payload(saved))
         return saved
 
     def update(self, entry: Entry) -> Optional[Entry]:
@@ -123,7 +124,7 @@ class EntryRepository:
         if not model:
             return None
         model.title = entry.title
-        model.slug = _unique_slug(self._db, entry.slug or _slug(entry.title), entry.id)
+        model.slug = _unique_slug(self._db, entry.slug or slug_from_title(entry.title), entry.id)
         model.entry_type = entry.entry_type.value
         model.content = entry.content
         model.tags = json.dumps(entry.tags)
@@ -137,7 +138,7 @@ class EntryRepository:
         self._db.refresh(model)
         saved = Entry(**model.to_dict())
         _refresh_embedding(self._db, saved, model)
-        _notify("node_updated", {"id": saved.id, "title": saved.title, "slug": saved.slug})
+        _notify("node_updated", _entry_event_payload(saved))
         return saved
 
     def delete(self, entry_id: str) -> bool:
@@ -176,6 +177,18 @@ class EntryRepository:
 
         rows = self._db.query(EntryModel).all()
         return [Entry(**row.to_dict()) for row in rows]
+
+
+def _entry_event_payload(entry: Entry) -> dict:
+    return {
+        "id": entry.id,
+        "title": entry.title,
+        "slug": entry.slug,
+        "entry_type": entry.entry_type.value
+        if hasattr(entry.entry_type, "value")
+        else entry.entry_type,
+        "tags": entry.tags,
+    }
 
 
 class EdgeRepository:

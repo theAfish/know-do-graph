@@ -31,6 +31,7 @@ from core.retrieval.progressive import ProgressiveRetriever
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
 from core.schemas.entry import EntryType
+from core.services.serialization import _strip_empty as _strip_empty_value
 from core.storage.database import get_db
 
 router = APIRouter()
@@ -362,18 +363,7 @@ _METADATA_INTERNAL_KEYS = {
 
 def _strip_empty(d: dict) -> dict:
     """Recursively remove None values and empty containers from a dict."""
-    out = {}
-    for k, v in d.items():
-        if v is None:
-            continue
-        if isinstance(v, dict):
-            v = _strip_empty(v)
-            if not v:
-                continue
-        elif isinstance(v, list) and len(v) == 0:
-            continue
-        out[k] = v
-    return out
+    return _strip_empty_value(d)
 
 
 def _clean_entry(entry) -> dict:
@@ -438,12 +428,7 @@ def _summarize_entry(entry, snippet_words: int = 40) -> dict:
 )
 def remote_graph_overview() -> dict:
     """Return graph stats (node/edge counts) plus a full dump of all nodes and edges."""
-    g = _graph._g
-    return {
-        **_graph.stats(),
-        "nodes": [{"id": n, **d} for n, d in g.nodes(data=True)],
-        "edges": [{"source": u, "target": v, **d} for u, v, d in g.edges(data=True)],
-    }
+    return {**_graph.stats(), **_graph.full_dump()}
 
 
 @router.get(

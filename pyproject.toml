@@ -74,6 +74,8 @@ files = [
     "core/retrieval/fusion.py",
     "core/retrieval/vector_store.py",
     "core/schemas/edge.py",
+    "core/services",
+    "core/utils",
 ]
 
 [tool.pytest.ini_options]
