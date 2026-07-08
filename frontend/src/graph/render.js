@@ -1,5 +1,5 @@
 import * as d3 from 'd3';
-import { colorFor, TYPE_COLORS } from '../constants.js';
+import { colorFor, isVirtualNode, TYPE_COLORS } from '../constants.js';
 import { state, emit, EVENTS } from '../state.js';
 
 let simulation;
@@ -117,15 +117,13 @@ export function render(nodes, edges, initialAlpha = 0.8) {
     .append('g')
     .attr('class', 'node');
 
-  const isPlaceholder = (d) => Array.isArray(d.tags) && d.tags.includes('placeholder');
-
   nodeSel
     .append('circle')
     .attr('r', (d) => rScale(degreeMap[d.id] || 0))
-    .attr('fill', (d) => (isPlaceholder(d) ? 'transparent' : colorFor(d.entry_type)))
+    .attr('fill', (d) => (isVirtualNode(d) ? 'transparent' : colorFor(d.entry_type)))
     .attr('stroke', (d) => d3.color(colorFor(d.entry_type)).brighter(1).toString())
-    .attr('stroke-width', (d) => (isPlaceholder(d) ? 2 : 1))
-    .attr('stroke-dasharray', (d) => (isPlaceholder(d) ? '4 3' : null));
+    .attr('stroke-width', (d) => (isVirtualNode(d) ? 2 : 1))
+    .attr('stroke-dasharray', (d) => (isVirtualNode(d) ? '4 3' : null));
 
   const titleSel = nodeSel
     .append('text')

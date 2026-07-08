@@ -631,6 +631,11 @@
   flex-shrink: 0;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
+.leg-dot-virtual {
+  background: transparent;
+  border: 2px dashed var(--text-muted);
+  box-shadow: none;
+}
 .score-ramp-svg {
   display: block;
   margin: 6px 0 2px;

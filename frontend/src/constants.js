@@ -1,8 +1,11 @@
-export const TYPE_COLORS = {
+export const PUBLIC_TYPE_COLORS = {
   capability: '#238636',
   procedure: '#1f6feb',
   heuristic: '#db61a2',
   constraint: '#f85149',
+};
+
+export const LEGACY_TYPE_GROUPS = {
   workflow: '#238636',
   tool: '#1f6feb',
   repository: '#1f6feb',
@@ -14,9 +17,34 @@ export const TYPE_COLORS = {
   generic: '#444c56',
 };
 
+export const TYPE_COLORS = {
+  ...PUBLIC_TYPE_COLORS,
+  ...LEGACY_TYPE_GROUPS,
+};
+
 export const ENTRY_TYPES = ['capability', 'procedure', 'heuristic', 'constraint'];
 
-export const colorFor = (type) => TYPE_COLORS[type] || TYPE_COLORS.generic;
+export const canonicalTypeFor = (type) => {
+  if (ENTRY_TYPES.includes(type)) return type;
+  if (['workflow'].includes(type)) return 'capability';
+  if (['tool', 'repository', 'data'].includes(type)) return 'procedure';
+  if (['analytical'].includes(type)) return 'heuristic';
+  if (['environment', 'dependency'].includes(type)) return 'constraint';
+  return type || 'capability';
+};
+
+export const colorFor = (type) =>
+  PUBLIC_TYPE_COLORS[canonicalTypeFor(type)] || TYPE_COLORS[type] || TYPE_COLORS.generic;
+
+export const isVirtualNode = (node) => {
+  const tags = Array.isArray(node?.tags) ? node.tags : [];
+  return Boolean(
+    node?.virtual ||
+      node?.is_virtual ||
+      node?.metadata?.virtual ||
+      tags.some((tag) => ['placeholder', 'virtual'].includes(tag))
+  );
+};
 
 export const VERIFICATION_COLORS = {
   unverified: '#6e7781',

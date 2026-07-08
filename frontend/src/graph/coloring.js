@@ -3,7 +3,14 @@
 // of several modes ("relevance").
 
 import * as d3 from 'd3';
-import { COLOR_MODES, TYPE_COLORS, VERIFICATION_COLORS, LEVEL_COLORS, colorFor } from '../constants.js';
+import {
+  COLOR_MODES,
+  TYPE_COLORS,
+  VERIFICATION_COLORS,
+  LEVEL_COLORS,
+  colorFor,
+  isVirtualNode,
+} from '../constants.js';
 import { state } from '../state.js';
 import { getSelections } from './render.js';
 
@@ -99,13 +106,13 @@ export function applyColoring() {
 
   sceneSel
     .selectAll('.node circle')
-    .attr('fill', (d) => (Array.isArray(d.tags) && d.tags.includes('placeholder') ? 'transparent' : fillFor(d, mode)))
+    .attr('fill', (d) => (isVirtualNode(d) ? 'transparent' : fillFor(d, mode)))
     .attr('stroke', (d) => {
       const c = d3.color(fillFor(d, mode));
       return c ? c.brighter(1).toString() : '#fff';
     })
-    .attr('stroke-dasharray', (d) => (Array.isArray(d.tags) && d.tags.includes('placeholder') ? '4 3' : null))
-    .attr('stroke-width', (d) => (Array.isArray(d.tags) && d.tags.includes('placeholder') ? 2 : 1));
+    .attr('stroke-dasharray', (d) => (isVirtualNode(d) ? '4 3' : null))
+    .attr('stroke-width', (d) => (isVirtualNode(d) ? 2 : 1));
 
   const ramp = isRamp(mode);
   sceneSel.selectAll('.node .score-label').each(function (d) {

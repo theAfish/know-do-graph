@@ -1,4 +1,9 @@
-import { TYPE_COLORS, VERIFICATION_COLORS, LEVEL_COLORS, COLOR_MODES } from '../constants.js';
+import {
+  PUBLIC_TYPE_COLORS,
+  VERIFICATION_COLORS,
+  LEVEL_COLORS,
+  COLOR_MODES,
+} from '../constants.js';
 import { state, on, EVENTS } from '../state.js';
 
 export function initLegend() {
@@ -31,7 +36,7 @@ function renderLegend() {
     return;
   }
 
-  renderSwatches(el, 'Entry types', TYPE_COLORS);
+  renderSwatches(el, 'Entry types', PUBLIC_TYPE_COLORS, { includeVirtualHint: true });
 }
 
 function renderRamp(el, cfg, mode) {
@@ -86,12 +91,18 @@ function rampBounds(mode) {
   return { low: 'low', high: 'high' };
 }
 
-function renderSwatches(el, title, colors) {
+function renderSwatches(el, title, colors, { includeVirtualHint = false } = {}) {
   el.innerHTML = `<div class="leg-title">${title}</div>`;
   for (const [key, color] of Object.entries(colors)) {
     const item = document.createElement('div');
     item.className = 'leg-item';
     item.innerHTML = `<div class="leg-dot" style="background:${color}"></div>${key}`;
+    el.appendChild(item);
+  }
+  if (includeVirtualHint) {
+    const item = document.createElement('div');
+    item.className = 'leg-item';
+    item.innerHTML = '<div class="leg-dot leg-dot-virtual"></div>virtual / placeholder';
     el.appendChild(item);
   }
 }
