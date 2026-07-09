@@ -147,27 +147,42 @@ and SSE refresh signaling. CSS ownership is documented in
 
 ## Priority 8 - Documentation Cleanup
 
-- [ ] Keep `README.md` focused on installation, quick start, API examples, and links to deeper docs.
-- [ ] Move architecture details into `docs/architecture.md`.
-- [ ] Move API route examples into `docs/api.md`.
-- [ ] Move agent behavior and tool descriptions into `docs/agents.md`.
-- [ ] Move memory/progressive retrieval design into `docs/memory-and-retrieval.md`.
-- [ ] Move long-term product vision out of `todo.md` into `docs/roadmap.md`, then keep `todo.md` as an actionable backlog.
-- [ ] Add a module map that explains `core/`, `api/`, `agents/`, `know_do_graph/`, `frontend/`, `examples/`, and `tests/`.
+- [x] Keep `README.md` focused on installation, quick start, API examples, and links to deeper docs.
+- [x] Move architecture details into `docs/architecture.md`.
+- [x] Move API route examples into `docs/api.md`.
+- [x] Move agent behavior and tool descriptions into `docs/agents.md`.
+- [x] Move memory/progressive retrieval design into `docs/memory-and-retrieval.md`.
+- [x] Move long-term product vision out of `todo.md` into `docs/roadmap.md`, then keep `todo.md` as an actionable backlog.
+- [x] Add a module map that explains `core/`, `api/`, `agents/`, `know_do_graph/`, `frontend/`, `examples/`, and `tests/`.
+
+Implementation note: `README.md` is now a concise quick-start and navigation
+page. Deeper material lives in `docs/architecture.md`, `docs/api.md`,
+`docs/agents.md`, `docs/memory-and-retrieval.md`, `docs/module-map.md`, and
+`docs/roadmap.md`, while this file remains an actionable refactoring backlog.
 
 ## Priority 9 - Testing Gaps
 
-- [ ] Add focused tests around slug uniqueness and alias resolution.
-- [ ] Add tests for wikilink parsing and autolinking edge cases.
-- [ ] Add tests for delete behavior to confirm entries, incident edges, vector rows, in-memory graph state, and emitted events stay consistent.
-- [ ] Add tests for embedding-provider fallback paths so keyword retrieval remains reliable when embeddings are unavailable.
-- [ ] Add tests for database merge/dedup dry-run and apply behavior.
-- [ ] Add tests for remote sync parsing, due checks, successful sync, and failure metadata.
-- [ ] Add frontend build verification to CI.
+- [x] Add focused tests around slug uniqueness and alias resolution.
+- [x] Add tests for wikilink parsing and autolinking edge cases.
+- [x] Add tests for delete behavior to confirm entries, incident edges, vector rows, in-memory graph state, and emitted events stay consistent.
+- [x] Add tests for embedding-provider fallback paths so keyword retrieval remains reliable when embeddings are unavailable.
+- [x] Add tests for database merge/dedup dry-run and apply behavior.
+- [x] Add tests for remote sync parsing, due checks, successful sync, and failure metadata.
+- [x] Add frontend build verification to CI.
+
+Implementation note: Priority 9 coverage lives in
+`tests/test_priority9_behavior.py` and `tests/test_priority9_sync.py`. CI now
+runs frontend lint, formatting, tests, and build in the frontend job.
 
 ## Priority 10 - Packaging and Release Hygiene
 
-- [ ] Confirm package data paths for `assets/starter.db` and `frontend/dist` work from both editable installs and built wheels.
-- [ ] Decide whether `examples` should ship in the wheel or only in source distributions.
-- [ ] Add release checklist covering version source, frontend build, starter DB inclusion, smoke tests, and PyPI publishing.
-- [ ] Add a smoke test that installs the built wheel into a clean environment and runs `know-do-graph init`, `know-do-graph serve --help`, and a minimal Python client lifecycle.
+- [x] Confirm package data paths for `assets/starter.db` and `frontend/dist` work from both editable installs and built wheels.
+- [x] Decide whether `examples` should ship in the wheel or only in source distributions.
+- [x] Add release checklist covering version source, frontend build, starter DB inclusion, smoke tests, and PyPI publishing.
+- [x] Add a smoke test that installs the built wheel into a clean environment and runs `know-do-graph init`, `know-do-graph serve --help`, and a minimal Python client lifecycle.
+
+Implementation note: `docs/release-checklist.md` records the release process
+and the decision to ship `examples/` in the wheel. Package-data assertions live
+in `tests/test_packaging_release.py`, and `scripts/smoke_wheel_install.py`
+builds and installs the wheel in a temporary environment for release smoke
+testing.

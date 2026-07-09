@@ -31,6 +31,8 @@ embeddings = ["sentence-transformers>=2.7"]
 local-embeddings = ["sentence-transformers>=2.7"]
 dev = [
     "build>=1.2",
+    "hatch-vcs>=0.4",
+    "hatchling>=1.25",
     "mypy>=1.10",
     "pytest>=8.0",
     "ruff>=0.5",

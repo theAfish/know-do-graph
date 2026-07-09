@@ -85,15 +85,20 @@ def merge_database(
 
     report = MergeReport()
     OtherSession = _open_readonly(Path(other_db_path))
+    other_engine = OtherSession.kw.get("bind")
 
-    with OtherSession() as src_db:
-        src_entry_models = src_db.query(EntryModel).all()
-        src_edge_models = src_db.query(EdgeModel).all()
-        # Capture raw fields up-front so we don't hold the read-only session open.
-        src_entries: list[tuple[dict, object, object]] = [
-            (m.to_dict(), m.created_at, m.updated_at) for m in src_entry_models
-        ]
-        src_edges: list[dict] = [m.to_dict() for m in src_edge_models]
+    try:
+        with OtherSession() as src_db:
+            src_entry_models = src_db.query(EntryModel).all()
+            src_edge_models = src_db.query(EdgeModel).all()
+            # Capture raw fields up-front so we don't hold the read-only session open.
+            src_entries: list[tuple[dict, object, object]] = [
+                (m.to_dict(), m.created_at, m.updated_at) for m in src_entry_models
+            ]
+            src_edges: list[dict] = [m.to_dict() for m in src_edge_models]
+    finally:
+        if other_engine is not None:
+            other_engine.dispose()
 
     logger.info(
         "db merge: source has %d entries, %d edges",
