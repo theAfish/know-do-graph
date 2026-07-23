@@ -14,11 +14,21 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from core.app_state import graph as _graph
+from core.graph.kinds import uses_know_do_semantics
 from core.retrieval.progressive import ProgressiveRetriever
 from core.schemas.entry import Entry, implied_level
-from core.storage.database import get_db
+from core.storage.database import engine, get_db
 
 router = APIRouter()
+
+
+def _require_know_do_graph() -> None:
+    """Keep L1--L4 retrieval unavailable for arbitrary custom taxonomies."""
+    if not uses_know_do_semantics(engine):
+        raise HTTPException(
+            status_code=409,
+            detail="Progressive retrieval is available only for a Know-Do Graph database.",
+        )
 
 
 def _retriever(db: Session = Depends(get_db)) -> ProgressiveRetriever:
@@ -45,6 +55,7 @@ def plan(
     Heuristics (L3) and constraints (L4) are intentionally excluded — fetch
     them on demand via ``/retrieve/heuristics`` and ``/retrieve/constraints``.
     """
+    _require_know_do_graph()
     return [_annotate(e) for e in retriever.plan(goal=goal, k=k, mode=mode, include_l2=include_l2)]
 
 
@@ -56,6 +67,7 @@ def heuristics(
     retriever: ProgressiveRetriever = Depends(_retriever),
 ):
     """Return L3 heuristics attached to a skill."""
+    _require_know_do_graph()
     return [_annotate(e) for e in retriever.heuristics_for(skill, k=k, include_semantic_fallback=fallback)]
 
 
@@ -67,6 +79,7 @@ def constraints(
     retriever: ProgressiveRetriever = Depends(_retriever),
 ):
     """Return L4 constraints / failure modes attached to a skill."""
+    _require_know_do_graph()
     return [_annotate(e) for e in retriever.constraints_for(skill, k=k, include_semantic_fallback=fallback)]
 
 
@@ -81,6 +94,7 @@ def expand(
     retriever: ProgressiveRetriever = Depends(_retriever),
 ):
     """Bundle additional context for an already-selected skill (verifier loop)."""
+    _require_know_do_graph()
     stage_list = [s.strip() for s in stages.split(",")] if stages else None
     result = retriever.expand(skill=skill, stages=stage_list, k=k)
     if "error" in result:

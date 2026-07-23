@@ -30,7 +30,7 @@ from core.memory.memgraph import MemGraph
 from core.retrieval.progressive import ProgressiveRetriever
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
-from core.schemas.entry import EntryType
+from core.schemas.entry import entry_type_value
 from core.storage.database import get_db
 
 router = APIRouter()
@@ -327,7 +327,7 @@ def remote_chat(body: ChatRequest) -> dict:
 def remote_search(
     q: Optional[str] = None,
     tags: Optional[str] = None,
-    entry_type: Optional[EntryType] = None,
+    entry_type: Optional[str] = None,
     limit: int = 20,
     db: Session = Depends(get_db),
 ) -> list[dict]:
@@ -420,7 +420,7 @@ def _summarize_entry(entry, snippet_words: int = 40) -> dict:
         "id": str(entry.id),
         "title": entry.title,
         "slug": entry.slug,
-        "entry_type": entry.entry_type.value if hasattr(entry.entry_type, "value") else entry.entry_type,
+        "entry_type": entry_type_value(entry.entry_type),
         "tags": list(entry.tags or []),
         "aliases": list(getattr(entry, "aliases", []) or []),
         "snippet": snippet,
@@ -812,4 +812,3 @@ def remote_distill(body: DistillRequest) -> dict:
         "distilled": len(pending),
         "response": response,
     }
-

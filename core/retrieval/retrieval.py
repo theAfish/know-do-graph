@@ -10,7 +10,7 @@ from core.retrieval import vector_store
 from core.retrieval.embedder import build_embedding_text, get_default_embedder
 from core.retrieval.fusion import reciprocal_rank_fusion, trust_multiplier, usage_bump
 from core.schemas.edge import Edge, EdgeRelation
-from core.schemas.entry import Entry, EntryType
+from core.schemas.entry import Entry, EntryType, entry_type_value
 from core.storage.models import EdgeModel, EntryModel
 
 _STOP_WORDS = {
@@ -109,7 +109,7 @@ class RetrievalEngine:
         self,
         query: Optional[str] = None,
         tags: Optional[list[str]] = None,
-        entry_type: Optional[EntryType] = None,
+        entry_type: Optional[EntryType | str] = None,
         limit: int = 20,
         mode: str = "hybrid",
     ) -> list[Entry]:
@@ -119,7 +119,7 @@ class RetrievalEngine:
         self,
         query: Optional[str] = None,
         tags: Optional[list[str]] = None,
-        entry_type: Optional[EntryType] = None,
+        entry_type: Optional[EntryType | str] = None,
         limit: int = 20,
         mode: str = "hybrid",
     ) -> list[tuple[Entry, float]]:
@@ -134,7 +134,7 @@ class RetrievalEngine:
         self,
         query: Optional[str],
         tags: Optional[list[str]],
-        entry_type: Optional[EntryType],
+        entry_type: Optional[EntryType | str],
         limit: int,
         mode: str = "hybrid",
     ) -> list[tuple[Entry, float]]:
@@ -174,7 +174,7 @@ class RetrievalEngine:
                 if row is None:
                     continue
                 d = row.to_dict()
-                if entry_type and d.get("entry_type") != entry_type.value:
+                if entry_type and d.get("entry_type") != entry_type_value(entry_type):
                     continue
                 if tags and not any(t in d["tags"] for t in tags):
                     continue
@@ -208,12 +208,12 @@ class RetrievalEngine:
     def _filter_only(
         self,
         tags: Optional[list[str]],
-        entry_type: Optional[EntryType],
+        entry_type: Optional[EntryType | str],
         limit: int,
     ) -> list[Entry]:
         q = self._db.query(EntryModel)
         if entry_type:
-            q = q.filter(EntryModel.entry_type == entry_type.value)
+            q = q.filter(EntryModel.entry_type == entry_type_value(entry_type))
         rows = q.limit(500).all()
         out: list[Entry] = []
         for row in rows:
@@ -229,7 +229,7 @@ class RetrievalEngine:
         self,
         query: str,
         tags: Optional[list[str]],
-        entry_type: Optional[EntryType],
+        entry_type: Optional[EntryType | str],
         limit: int,
     ) -> list[tuple[str, int]]:
         """Returns ``[(entry_id, raw_score), ...]`` sorted by descending score.
@@ -238,7 +238,7 @@ class RetrievalEngine:
         """
         q = self._db.query(EntryModel)
         if entry_type:
-            q = q.filter(EntryModel.entry_type == entry_type.value)
+            q = q.filter(EntryModel.entry_type == entry_type_value(entry_type))
 
         tokens = [
             t for t in query.lower().split()

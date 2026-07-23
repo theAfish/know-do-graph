@@ -13,9 +13,9 @@ from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
 from core.schemas.entry import (
     Entry,
-    EntryType,
     KNOWN_ASSET_FOLDERS,
     NodeAsset,
+    entry_type_value,
 )
 from core.storage.database import get_db
 from core.storage.repository import EdgeRepository, EntryRepository
@@ -41,7 +41,7 @@ def list_entries(
 def search_entries(
     q: Optional[str] = None,
     tags: Optional[str] = None,
-    entry_type: Optional[EntryType] = None,
+    entry_type: Optional[str] = None,
     limit: int = 20,
     include_scores: bool = False,
     engine: RetrievalEngine = Depends(_engine),
@@ -79,7 +79,7 @@ def create_entry(entry: Entry, db: Session = Depends(get_db)):
         "id": saved.id,
         "title": saved.title,
         "slug": saved.slug,
-        "entry_type": saved.entry_type.value if hasattr(saved.entry_type, "value") else saved.entry_type,
+        "entry_type": entry_type_value(saved.entry_type),
         "tags": saved.tags,
     })
     return saved.model_dump(mode="json")
@@ -99,7 +99,7 @@ def update_entry(entry_id: str, entry: Entry, db: Session = Depends(get_db)):
         "id": updated.id,
         "title": updated.title,
         "slug": updated.slug,
-        "entry_type": updated.entry_type.value if hasattr(updated.entry_type, "value") else updated.entry_type,
+        "entry_type": entry_type_value(updated.entry_type),
         "tags": updated.tags,
     })
     return updated.model_dump(mode="json")

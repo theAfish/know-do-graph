@@ -15,6 +15,7 @@ export function initSearch() {
 
   searchInput.addEventListener('input', onSearchInput);
   typeFilter.addEventListener('change', () => {
+    queueDatasetSearch();
     runFilters();
     emit(EVENTS.FILTERS_CHANGED);
   });
@@ -41,15 +42,37 @@ const apiSearchDebounced = debounce(async (q, type) => {
 function onSearchInput() {
   const q = searchInput.value.trim();
   const type = typeFilter.value;
+  state.searchQuery = q;
 
-  if (q.length >= 2 && !q.startsWith('#')) {
+  if (usesDatasetSearch() && q.length >= 2) {
+    state.apiMatchIds = null;
+    state.searchScores = {};
+    datasetSearchDebounced(q, type);
+  } else if (q.length >= 2 && !q.startsWith('#')) {
     apiSearchDebounced(q, type);
   } else {
     state.apiMatchIds = null;
     state.searchScores = {};
+    emit(EVENTS.GRAPH_SEARCH_CLEAR);
   }
   runFilters();
   emit(EVENTS.FILTERS_CHANGED);
+}
+
+const datasetSearchDebounced = debounce((q, type) => {
+  emit(EVENTS.GRAPH_SEARCH_REQUEST, { q, type });
+}, 350);
+
+function usesDatasetSearch() {
+  return state.dataset?.capabilities?.includes('search');
+}
+
+function queueDatasetSearch() {
+  const q = searchInput?.value.trim() || '';
+  state.searchQuery = q;
+  if (usesDatasetSearch() && q.length >= 2) {
+    datasetSearchDebounced(q, typeFilter?.value || '');
+  }
 }
 
 function runFilters() {

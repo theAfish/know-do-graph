@@ -16,7 +16,20 @@ export const TYPE_COLORS = {
 
 export const ENTRY_TYPES = Object.keys(TYPE_COLORS);
 
-export const colorFor = (type) => TYPE_COLORS[type] || TYPE_COLORS.generic;
+function colorFromTypeName(type) {
+  let hash = 0;
+  for (const char of String(type || 'generic')) {
+    hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+  }
+  // D3's colour parser accepts the legacy comma form across supported versions.
+  return `hsl(${Math.abs(hash) % 360}, 58%, 48%)`;
+}
+
+export const colorFor = (type) => TYPE_COLORS[type] || colorFromTypeName(type);
+
+export function colorsForTypes(types) {
+  return Object.fromEntries([...types].sort().map((type) => [type, colorFor(type)]));
+}
 
 export const VERIFICATION_COLORS = {
   unverified: '#6e7781',

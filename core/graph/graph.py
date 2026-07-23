@@ -6,7 +6,7 @@ from typing import Optional
 import networkx as nx
 
 from core.schemas.edge import Edge, EdgeRelation
-from core.schemas.entry import Entry
+from core.schemas.entry import Entry, entry_type_value
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class KnowDoGraph:
             entry.id,
             title=entry.title,
             slug=entry.slug,
-            entry_type=entry.entry_type.value,
+            entry_type=entry_type_value(entry.entry_type),
             tags=entry.tags,
             timestamp=timestamp,
             usage_count=md.usage_count,

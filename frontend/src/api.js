@@ -29,7 +29,27 @@ async function jrequest(path, options) {
 }
 
 export const api = {
-  getFullGraph: () => jget('/graph/full'),
+  getFullGraph: (options = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(options).forEach(([key, value]) => {
+      if (value != null) params.set(key, String(value));
+    });
+    const suffix = params.size ? `?${params}` : '';
+    return jget(`/graph/full${suffix}`);
+  },
+  searchGraph: (options = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(options).forEach(([key, value]) => {
+      if (value != null && value !== '') params.set(key, String(value));
+    });
+    return jget(`/graph/search?${params}`);
+  },
+  getGraphDataset: () => jget('/graph/dataset'),
+  getHierarchy: (nodeId, { targetLevel, maxNodes = 600 } = {}) => {
+    const params = new URLSearchParams({ max_nodes: String(maxNodes) });
+    if (targetLevel != null) params.set('target_level', String(targetLevel));
+    return jget(`/graph/hierarchy/${encodeURIComponent(nodeId)}?${params}`);
+  },
   getEntry: (id) => jget(`/entries/${id}`),
   updateEntry: (id, entry) =>
     jrequest(`/entries/${encodeURIComponent(id)}`, {

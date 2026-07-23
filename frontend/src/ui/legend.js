@@ -1,4 +1,4 @@
-import { TYPE_COLORS, VERIFICATION_COLORS, LEVEL_COLORS, COLOR_MODES } from '../constants.js';
+import { VERIFICATION_COLORS, LEVEL_COLORS, COLOR_MODES, colorsForTypes } from '../constants.js';
 import { state, on, EVENTS } from '../state.js';
 
 export function initLegend() {
@@ -31,7 +31,7 @@ function renderLegend() {
     return;
   }
 
-  renderSwatches(el, 'Entry types', TYPE_COLORS);
+  renderSwatches(el, 'Entry types', colorsForTypes(new Set(state.allNodes.map((node) => node.entry_type))));
 }
 
 function renderRamp(el, cfg, mode) {

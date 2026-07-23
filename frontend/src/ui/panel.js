@@ -71,16 +71,40 @@ export function closeDetail() {
 
 function renderDetailHtml(entry, nodeId) {
   const md = entry.metadata || {};
-  let html = `<div class="detail-actions">
-    <button class="panel-btn" type="button" data-action="edit-node">Edit</button>
-    <button class="panel-btn danger" type="button" data-action="delete-node">Delete</button>
-  </div>`;
+  const readOnly = entry.read_only || state.graphMetadata?.read_only;
+  let html = readOnly
+    ? '<p class="readonly-note">Read-only analytical projection</p>'
+    : `<div class="detail-actions">
+        <button class="panel-btn" type="button" data-action="edit-node">Edit</button>
+        <button class="panel-btn danger" type="button" data-action="delete-node">Delete</button>
+      </div>`;
 
   html += section('Identity', [
     kv('ID', entry.id),
     kv('Slug', entry.slug),
     kv('Type', entry.entry_type),
   ]);
+
+  if (readOnly && md.member_count != null) {
+    html += section('Projection', [
+      kv('Resolution level', md.lrg_level),
+      kv('Members', md.member_count),
+      kv('Source entry ID', md.source_entry_id),
+    ].filter(Boolean));
+  }
+
+  if (readOnly && md.search_matches?.length) {
+    html += section('Search matches', [kv('', md.search_matches.join(', '))]);
+  }
+
+  if (entry.hierarchy?.target_levels?.length) {
+    const targetLevel = Math.max(...entry.hierarchy.target_levels);
+    html += `<div class="detail-actions">
+      <button class="panel-btn primary" type="button" data-action="show-hierarchy" data-target-level="${targetLevel}">
+        Show constituents at level ${targetLevel}
+      </button>
+    </div>`;
+  }
 
   if (entry.content) {
     html += `<div class="detail-section">
@@ -177,6 +201,9 @@ function handlePanelClick(event) {
     renderCurrentDetail();
   } else if (action === 'delete-node') {
     deleteCurrentNode();
+  } else if (action === 'show-hierarchy') {
+    const targetLevel = Number(event.target.closest('[data-target-level]')?.dataset.targetLevel);
+    emit(EVENTS.HIERARCHY_REQUEST, { nodeId: currentEntry.id, targetLevel });
   }
 }
 
@@ -188,7 +215,8 @@ function renderCurrentDetail() {
 }
 
 function renderEditForm(entry) {
-  const typeOptions = ENTRY_TYPES.map(
+  const types = state.dataset?.entry_types || ENTRY_TYPES;
+  const typeOptions = types.map(
     (type) =>
       `<option value="${escAttr(type)}"${type === entry.entry_type ? ' selected' : ''}>${escHtml(type)}</option>`
   ).join('');

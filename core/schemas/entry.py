@@ -273,7 +273,9 @@ class Entry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     slug: str = ""
-    entry_type: EntryType = EntryType.generic
+    # Native KDG uses ``EntryType``. Custom graphs may define any non-empty
+    # string type (for example ``category`` or ``parameter``).
+    entry_type: EntryType | str = EntryType.generic
     content: str = ""
     tags: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
@@ -281,6 +283,19 @@ class Entry(BaseModel):
     internal_refs: list[str] = Field(default_factory=list)
     scripts: list[ScriptAttachment] = Field(default_factory=list)
     assets: list[NodeAsset] = Field(default_factory=list)
+
+    @field_validator("entry_type", mode="after")
+    @classmethod
+    def _normalise_entry_type(cls, value: EntryType | str) -> EntryType | str:
+        if isinstance(value, EntryType):
+            return value
+        normalized = str(value).strip()
+        if not normalized:
+            return EntryType.generic
+        try:
+            return EntryType(normalized)
+        except ValueError:
+            return normalized
 
     def model_post_init(self, __context: object) -> None:
         if not self.slug:
@@ -347,6 +362,13 @@ class Entry(BaseModel):
         for a in self.assets:
             out.setdefault(a.folder, []).append(a)
         return out
+
+
+def entry_type_value(entry_type: EntryType | str | None) -> str:
+    """Return a stored/displayable node type for native and custom graphs."""
+    if hasattr(entry_type, "value"):
+        return str(entry_type.value)
+    return str(entry_type or EntryType.generic.value)
 
 
 # Scientific symbols that should become descriptive words, not their Latin

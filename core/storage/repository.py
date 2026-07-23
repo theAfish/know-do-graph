@@ -9,7 +9,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from core.schemas.edge import Edge
-from core.schemas.entry import Entry
+from core.schemas.entry import Entry, entry_type_value
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ class EntryRepository:
             id=entry.id,
             title=entry.title,
             slug=slug,
-            entry_type=entry.entry_type.value,
+            entry_type=entry_type_value(entry.entry_type),
             content=entry.content,
             tags=json.dumps(entry.tags),
             aliases=json.dumps(entry.aliases),
@@ -125,7 +125,7 @@ class EntryRepository:
             return None
         model.title = entry.title
         model.slug = _unique_slug(self._db, entry.slug or _slug(entry.title), entry.id)
-        model.entry_type = entry.entry_type.value
+        model.entry_type = entry_type_value(entry.entry_type)
         model.content = entry.content
         model.tags = json.dumps(entry.tags)
         model.aliases = json.dumps(entry.aliases)

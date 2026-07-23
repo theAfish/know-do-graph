@@ -2,6 +2,24 @@
 
 A wiki-native, agent-oriented infrastructure for **executable knowledge**, **operational memory**, and **capability discovery**.
 
+## Graph kinds
+
+The server determines the graph kind from the database. A `graph_metadata`
+declaration is authoritative; otherwise, a database with an entry type outside
+the native KDG enum is a Custom Graph. A database containing only native types
+is a Know-Do Graph and keeps its L1--L4 progressive retrieval behavior.
+Custom graphs use the same SQLite `entries` / `edges` tables, but their
+`entry_type` values are displayed and filtered exactly as stored; they are not
+assigned KDG skill levels and `/retrieve/*` returns `409`.
+
+For an imported graph whose real types were saved in `metadata_json.subtype`,
+promote them once with:
+
+```bash
+python3 scripts/promote_subtypes_to_entry_types.py data/vasp_graph_kdg.db
+KDG_DB_PATH=data/vasp_graph_kdg.db uvicorn api.main:app
+```
+
 Entries are the primary object — wiki pages that agents can read, traverse, and evolve.  
 The graph emerges naturally from `[[wikilink]]` references between entries.
 
@@ -436,6 +454,29 @@ A built-in browser frontend for visualising and debugging the graph is served at
 | Click edge targets | Jump directly to a connected node from the detail panel |
 
 Open it at `http://127.0.0.1:8000/ui` while the server is running.
+
+#### Viewing LRG projection databases
+
+When the configured SQLite database has no KDG `entries` but contains the
+layered LRG tables (`levels`, `supernodes`, `supernode_members`, and
+`coarse_edges`), the server recognises it as a **read-only LRG hierarchical
+projection**. The UI then provides a resolution selector and an overview-size
+selector. It starts with the most connected 600 nodes and their induced edges,
+which keeps dense projections responsive; choose a larger overview to inspect
+more of the hierarchy. Searches run across every node at the selected
+resolution (not only the overview sample) and temporarily render the matching
+subgraph; **Back to overview** restores the sampled view.
+
+The adapter identifies the schema rather than relying on a database filename.
+Normal KDG databases retain their existing editable behavior, even if they also
+contain analysis tables. The adapter contract in `core/graph/datasets.py` is
+format-neutral: each future format declares its capabilities, graph controls,
+presentation defaults, and optional hierarchy view. The frontend creates its
+controls from that descriptor, rather than branching on a database kind.
+
+For LRG, select a clustered node at level *N* and choose **Show constituents at
+level N−1** in the detail panel. This renders containment links to the finer
+resolution. **Back to overview** returns to the regular graph view.
 
 ---
 
