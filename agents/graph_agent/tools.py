@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -38,7 +38,7 @@ def _looks_overly_specific(title: str) -> bool:
     return any(p.search(title) for p in _CONCRETE_INSTANCE_PATTERNS)
 
 
-def _check_generalization(title: str, db: Any) -> dict:
+def _check_generalization(title: str, db: Any, graph: Any = None) -> dict:
     """Soft abstraction check.
 
     Returns ``{needs_generalization: bool, similar: [...], suggestion: str}``.
@@ -49,7 +49,7 @@ def _check_generalization(title: str, db: Any) -> dict:
     from core.retrieval.retrieval import RetrievalEngine
     from core import app_state
 
-    engine = RetrievalEngine(db, app_state.graph)
+    engine = RetrievalEngine(db, graph or app_state.graph)
     candidates = engine.search_entries(query=title, limit=5)
     flag = _looks_overly_specific(title) or len(candidates) > 0
     return {
@@ -85,7 +85,7 @@ def create_entry(
     from core.storage.repository import EntryRepository
 
     with SessionLocal() as db:
-        check = _check_generalization(title, db)
+        check = _check_generalization(title, db, graph)
         meta = EntryMetadata(
             source_provenance=source_provenance,
             needs_generalization=check["needs_generalization"],
@@ -231,7 +231,16 @@ def create_edge(
     weight: float = 1.0,
     graph: Any = None,
 ) -> dict:
-    """Create a directed edge between two entries."""
+    """Create a directed edge between two entries.
+
+    Both ``source_id`` and ``target_id`` may be a real entry ID, a slug, or an
+    alias — they are resolved against the database. If either side does not
+    resolve to an existing entry, the edge is rejected (no DB write, no
+    in-memory mutation) and an error is returned so the agent can either fix
+    its arguments or create the missing node first. This prevents the ghost
+    "grey" placeholder nodes that networkx would otherwise auto-create.
+    """
+    from core.retrieval.retrieval import RetrievalEngine
     from core.schemas.edge import Edge, EdgeRelation
     from core.storage.database import SessionLocal
     from core.storage.repository import EdgeRepository
@@ -241,12 +250,34 @@ def create_edge(
     except ValueError:
         rel = EdgeRelation.wikilink
 
-    edge = Edge(source_id=source_id, target_id=target_id, relation=rel, weight=weight)
     with SessionLocal() as db:
+        engine = RetrievalEngine(db, graph)
+        src = engine.resolve_identifier(source_id)
+        tgt = engine.resolve_identifier(target_id)
+        missing = []
+        if src is None:
+            missing.append(source_id)
+        if tgt is None:
+            missing.append(target_id)
+        if missing:
+            return {
+                "error": "edge_endpoint_not_found",
+                "missing": missing,
+                "hint": "Resolve source_id and target_id to existing entries (use search_entries / get_entry) or call create_entry first.",
+            }
+        if src.id == tgt.id:
+            return {"error": "self_loop_rejected", "entry_id": src.id}
+
+        edge = Edge(source_id=src.id, target_id=tgt.id, relation=rel, weight=weight)
         saved = EdgeRepository(db).create(edge)
     if graph is not None:
         graph.add_edge(saved)
-    return {"id": saved.id, "source_id": saved.source_id, "target_id": saved.target_id, "relation": saved.relation.value}
+    return {
+        "id": saved.id,
+        "source_id": saved.source_id,
+        "target_id": saved.target_id,
+        "relation": saved.relation.value,
+    }
 
 
 def delete_edge(edge_id: str, graph: Any = None) -> dict:
@@ -462,6 +493,7 @@ def merge_entries(
     merge_aliases: bool = True,
     merge_tags: bool = True,
     graph: Any = None,
+    mutation_validator: Callable[[Any], dict | None] | None = None,
 ) -> dict:
     """Merge *duplicate_id* into *primary_id*.
 
@@ -488,6 +520,11 @@ def merge_entries(
             return {"error": f"Duplicate entry '{duplicate_id}' not found."}
         if primary.id == duplicate.id:
             return {"error": "primary_id and duplicate_id refer to the same entry."}
+        if mutation_validator is not None:
+            for entry in (primary, duplicate):
+                denied = mutation_validator(entry)
+                if denied:
+                    return denied
 
         # Re-target edges
         edges_retargeted = 0
@@ -586,7 +623,7 @@ def add_script_to_entry(
     """
     from core import app_state
     from core.retrieval.retrieval import RetrievalEngine
-    from core.schemas.entry import ScriptAttachment
+    from core.schemas.entry import NodeAsset, ASSET_FOLDER_SCRIPTS
     from core.storage.database import SessionLocal
     from core.storage.repository import EntryRepository
 
@@ -598,12 +635,17 @@ def add_script_to_entry(
             return {"error": f"Entry '{entry_id}' not found."}
 
         resolved_filename = filename or (_slug(entry.title) + _ext_for_language(language))
-        # Replace existing script with the same filename if present
-        entry.scripts = [s for s in entry.scripts if s.filename != resolved_filename]
-        entry.scripts.append(ScriptAttachment(
+        # Replace existing asset at scripts/<filename> if present
+        entry.assets = [
+            a for a in entry.assets
+            if not (a.folder == ASSET_FOLDER_SCRIPTS and a.filename == resolved_filename)
+        ]
+        entry.assets.append(NodeAsset(
+            folder=ASSET_FOLDER_SCRIPTS,
             filename=resolved_filename,
-            language=language,
+            kind="file",
             content=code,
+            language=language,
             requirements=requirements or [],
             description=description,
         ))
@@ -643,6 +685,134 @@ def _ext_for_language(language: str) -> str:
         "c++": ".cpp",
     }
     return mapping.get(language.lower(), ".txt")
+
+
+def add_asset_to_entry(
+    entry_id: str,
+    folder: str,
+    filename: str,
+    content: str = "",
+    kind: str = "file",
+    language: str | None = None,
+    mime_type: str | None = None,
+    description: str = "",
+    requirements: list[str] | None = None,
+    graph: Any = None,
+) -> dict:
+    """Attach a generic *asset* to an entry inside a named folder.
+
+    Each entry behaves like a small folder containing typed assets. Conventional
+    folders are ``scripts``, ``references``, ``docs``, ``examples``, ``data``,
+    ``notes``; any other folder name is allowed.
+
+    Parameters
+    ----------
+    folder:
+        Sub-folder name (e.g. ``"scripts"``, ``"references"``, ``"docs"``).
+    filename:
+        File name within the folder (may contain a sub-path like
+        ``"examples/relax.py"``).
+    content:
+        File body for ``kind="file"`` / ``"text"``, or the URL for
+        ``kind="link"``.
+    kind:
+        One of ``"file"`` (binary/code download), ``"text"`` (inline markdown
+        / notes), or ``"link"`` (external reference; ``content`` is a URL).
+    language:
+        Programming language hint for syntax / mime detection (``"python"`` …).
+    description:
+        Short human-readable description shown in the UI.
+    requirements:
+        Package dependencies (for runnable scripts).
+
+    The asset becomes addressable as
+    ``GET /entries/{entry_id}/assets/{folder}/{filename}``.
+    """
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.entry import NodeAsset
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EntryRepository
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        entry = engine.resolve_identifier(entry_id)
+        if entry is None:
+            return {"error": f"Entry '{entry_id}' not found."}
+        try:
+            asset = NodeAsset(
+                folder=folder,
+                filename=filename,
+                kind=kind,
+                content=content,
+                language=language,
+                mime_type=mime_type,
+                description=description,
+                requirements=requirements or [],
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+        # Replace existing asset at same folder/filename
+        entry.assets = [
+            a for a in entry.assets
+            if not (a.folder == asset.folder and a.filename == asset.filename)
+        ]
+        entry.assets.append(asset)
+        updated = EntryRepository(db).update(entry)
+
+    if g is not None and updated:
+        g.add_entry(updated)
+
+    return {
+        "id": updated.id,
+        "title": updated.title,
+        "asset": {
+            "folder": asset.folder,
+            "filename": asset.filename,
+            "kind": asset.kind,
+            "download_url": f"/entries/{updated.id}/assets/{asset.folder}/{asset.filename}",
+        },
+        "total_assets": len(updated.assets),
+    }
+
+
+def list_assets(identifier: str, folder: str | None = None, graph: Any = None) -> dict:
+    """List the assets attached to an entry, grouped by folder.
+
+    Pass ``folder`` to filter to a single sub-folder (e.g. ``"references"``).
+    Returns metadata only — fetch bodies via the asset download URL.
+    """
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        entry = engine.resolve_identifier(identifier)
+    if entry is None:
+        return {"error": f"Entry '{identifier}' not found."}
+
+    grouped: dict[str, list[dict]] = {}
+    for a in entry.assets:
+        if folder and a.folder != folder.lower():
+            continue
+        grouped.setdefault(a.folder, []).append({
+            "filename": a.filename,
+            "kind": a.kind,
+            "language": a.language,
+            "description": a.description,
+            "size": len(a.content or ""),
+            "download_url": f"/entries/{entry.id}/assets/{a.folder}/{a.filename}",
+        })
+    return {
+        "id": entry.id,
+        "slug": entry.slug,
+        "title": entry.title,
+        "folders": grouped,
+        "total": sum(len(v) for v in grouped.values()),
+    }
 
 
 def get_script(identifier: str, filename: str | None = None, graph: Any = None) -> dict:
@@ -935,6 +1105,263 @@ def attach_script_to_entry(
 
 
 # ---------------------------------------------------------------------------
+# Hierarchical-memory tools (L3 heuristics / L4 constraints)
+# ---------------------------------------------------------------------------
+
+
+def _create_sidecar(
+    *,
+    skill_id: str,
+    title: str,
+    content: str,
+    entry_type_value: str,
+    skill_level_value: str,
+    edge_relation_value: str,
+    tags: list[str] | None,
+    applicability: dict | None,
+    update_failure_modes: bool,
+    graph: Any,
+) -> dict:
+    """Shared helper for create_heuristic / create_constraint."""
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.edge import Edge, EdgeRelation
+    from core.schemas.entry import Entry, EntryMetadata, EntryType, SkillLevel
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EdgeRepository, EntryRepository
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        skill_entry = engine.resolve_identifier(skill_id)
+        if skill_entry is None:
+            return {"error": f"Skill '{skill_id}' not found."}
+
+        meta = EntryMetadata(
+            skill_level=SkillLevel(skill_level_value),
+            applicability=applicability or {},
+            source_provenance=f"sidecar_of:{skill_entry.slug}",
+        )
+        entry = Entry(
+            title=title,
+            content=content,
+            entry_type=EntryType(entry_type_value),
+            tags=tags or [],
+            metadata=meta,
+        )
+        saved = EntryRepository(db).create(entry)
+        edge = Edge(
+            source_id=saved.id,
+            target_id=skill_entry.id,
+            relation=EdgeRelation(edge_relation_value),
+        )
+        EdgeRepository(db).create(edge)
+
+        if update_failure_modes and entry_type_value == "constraint":
+            if saved.slug not in skill_entry.metadata.failure_modes:
+                skill_entry.metadata.failure_modes.append(saved.slug)
+                EntryRepository(db).update(skill_entry)
+
+    if g is not None:
+        g.add_entry(saved)
+        g.add_edge(edge)
+    return {
+        "id": saved.id,
+        "slug": saved.slug,
+        "title": saved.title,
+        "level": skill_level_value,
+        "attached_to": skill_entry.slug,
+        "relation": edge_relation_value,
+    }
+
+
+def create_heuristic(
+    skill: str,
+    title: str,
+    content: str,
+    tags: list[str] | None = None,
+    domain: str | None = None,
+    confidence: float | None = None,
+    papers: list[str] | None = None,
+    graph: Any = None,
+) -> dict:
+    """Create an L3 heuristic node attached to an L1/L2 *skill*.
+
+    Heuristics are conditional, empirical guidance ("cooling rate strongly
+    affects sp2/sp3 ratio") — NOT universal truths. Use this instead of
+    embedding heuristics inside a capability's content blob.
+
+    Wires a ``heuristic_for`` edge from the new node to *skill*.
+    """
+    applicability: dict = {}
+    if domain:
+        applicability["domain"] = domain
+    if confidence is not None:
+        applicability["confidence"] = float(confidence)
+    if papers:
+        applicability["papers"] = list(papers)
+    return _create_sidecar(
+        skill_id=skill,
+        title=title,
+        content=content,
+        entry_type_value="heuristic",
+        skill_level_value="L3",
+        edge_relation_value="heuristic_for",
+        tags=tags,
+        applicability=applicability,
+        update_failure_modes=False,
+        graph=graph,
+    )
+
+
+def create_constraint(
+    skill: str,
+    title: str,
+    content: str,
+    tags: list[str] | None = None,
+    domain: str | None = None,
+    severity: str | None = None,
+    papers: list[str] | None = None,
+    graph: Any = None,
+) -> dict:
+    """Create an L4 constraint / failure-mode node attached to an L1/L2 *skill*.
+
+    Constraints describe known limitations, instability regions, and failure
+    patterns ("unsuitable for bond-breaking processes"). Wires a
+    ``constraint_on`` edge from the new node to *skill* and appends the new
+    node's slug to ``skill.metadata.failure_modes`` for quick planner access.
+    """
+    applicability: dict = {}
+    if domain:
+        applicability["domain"] = domain
+    if severity:
+        applicability["severity"] = severity
+    if papers:
+        applicability["papers"] = list(papers)
+    return _create_sidecar(
+        skill_id=skill,
+        title=title,
+        content=content,
+        entry_type_value="constraint",
+        skill_level_value="L4",
+        edge_relation_value="constraint_on",
+        tags=tags,
+        applicability=applicability,
+        update_failure_modes=True,
+        graph=graph,
+    )
+
+
+def decompose_capability(
+    capability: str,
+    procedure: str,
+    graph: Any = None,
+) -> dict:
+    """Wire a ``decomposes_to`` edge from an L1 *capability* to an L2 *procedure*.
+
+    Both arguments are entry id/slug/alias of existing nodes. Use this to
+    record that *procedure* is one of the executable decompositions of
+    *capability*. Multiple decompositions per capability are allowed.
+    """
+    from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
+    from core.schemas.edge import Edge, EdgeRelation
+    from core.storage.database import SessionLocal
+    from core.storage.repository import EdgeRepository
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        engine = RetrievalEngine(db, g)
+        cap = engine.resolve_identifier(capability)
+        proc = engine.resolve_identifier(procedure)
+        if cap is None:
+            return {"error": f"Capability '{capability}' not found."}
+        if proc is None:
+            return {"error": f"Procedure '{procedure}' not found."}
+        edge = Edge(source_id=cap.id, target_id=proc.id, relation=EdgeRelation.decomposes_to)
+        saved = EdgeRepository(db).create(edge)
+    if g is not None:
+        g.add_edge(saved)
+    return {
+        "edge_id": saved.id,
+        "capability": cap.slug,
+        "procedure": proc.slug,
+        "relation": "decomposes_to",
+    }
+
+
+def retrieve_plan(goal: str, k: int = 5, include_l2: bool = True, graph: Any = None) -> list[dict]:
+    """Stage-1 retrieval: return planner-level skills (L1, optionally L2) for *goal*.
+
+    Excludes heuristics and constraints — fetch them with
+    ``retrieve_heuristics`` / ``retrieve_constraints`` once a candidate is
+    selected.
+    """
+    from core import app_state
+    from core.retrieval.progressive import ProgressiveRetriever
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        ret = ProgressiveRetriever(db, g)
+        results = ret.plan(goal=goal, k=k, include_l2=include_l2)
+    return [
+        {
+            "id": e.id,
+            "slug": e.slug,
+            "title": e.title,
+            "entry_type": e.entry_type.value,
+            "tags": e.tags,
+        }
+        for e in results
+    ]
+
+
+def retrieve_heuristics(skill: str, k: int = 5, graph: Any = None) -> list[dict]:
+    """Stage-2 retrieval: L3 heuristics attached to *skill*."""
+    from core import app_state
+    from core.retrieval.progressive import ProgressiveRetriever
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        ret = ProgressiveRetriever(db, g)
+        results = ret.heuristics_for(skill, k=k)
+    return [
+        {
+            "id": e.id,
+            "slug": e.slug,
+            "title": e.title,
+            "content": e.content,
+            "applicability": e.metadata.applicability,
+        }
+        for e in results
+    ]
+
+
+def retrieve_constraints(skill: str, k: int = 5, graph: Any = None) -> list[dict]:
+    """Stage-3 retrieval: L4 constraints / failure modes for *skill*."""
+    from core import app_state
+    from core.retrieval.progressive import ProgressiveRetriever
+    from core.storage.database import SessionLocal
+
+    g = graph or app_state.graph
+    with SessionLocal() as db:
+        ret = ProgressiveRetriever(db, g)
+        results = ret.constraints_for(skill, k=k)
+    return [
+        {
+            "id": e.id,
+            "slug": e.slug,
+            "title": e.title,
+            "content": e.content,
+            "applicability": e.metadata.applicability,
+        }
+        for e in results
+    ]
+
+
+# ---------------------------------------------------------------------------
 # OpenAI tool schema definitions
 # ---------------------------------------------------------------------------
 
@@ -952,7 +1379,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "entry_type": {
                         "type": "string",
                         "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "generic"],
+                                 "environment", "dependency", "data", "analytical", "memory", "heuristic", "constraint", "generic"],
                         "description": "Semantic type of this entry",
                     },
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "List of tags"},
@@ -977,7 +1404,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "entry_type": {
                         "type": "string",
                         "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "generic"],
+                                 "environment", "dependency", "data", "analytical", "memory", "heuristic", "constraint", "generic"],
                     },
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "aliases": {"type": "array", "items": {"type": "string"}, "description": "Alternative names / synonyms"},
@@ -1075,7 +1502,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "relation": {
                         "type": "string",
                         "enum": ["dependency", "compatible_with", "alternative_to", "related_workflow",
-                                 "generated_from", "memory_of", "refinement_of", "derived_from",
+                                 "generated_from", "memory_of", "related_memory", "refinement_of", "derived_from",
                                  "warning_about", "cited_by", "wikilink", "prerequisite", "replacement",
                                  "execution_pathway", "transformation", "provenance", "compatibility",
                                  "implements", "uses", "documents"],
@@ -1236,7 +1663,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "entry_type": {
                         "type": "string",
                         "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "generic"],
+                                 "environment", "dependency", "data", "analytical", "memory", "heuristic", "constraint", "generic"],
                     },
                     "limit": {"type": "integer", "default": 50},
                 },
@@ -1262,6 +1689,134 @@ TOOL_SCHEMAS: list[dict] = [
                     "merge_tags": {"type": "boolean", "default": True, "description": "Merge duplicate's tags into primary"},
                 },
                 "required": ["primary_id", "duplicate_id"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------ #
+    # Hierarchical-memory tools (L1–L4)                                    #
+    # ------------------------------------------------------------------ #
+    {
+        "type": "function",
+        "function": {
+            "name": "create_heuristic",
+            "description": (
+                "Create an L3 heuristic node attached to an L1 capability or L2 procedure. "
+                "Use this for conditional empirical guidance (e.g. 'cooling rate strongly affects "
+                "sp2/sp3 ratio'), NOT for universal truths. Wires a 'heuristic_for' edge."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "Target skill id/slug/alias (L1 or L2)"},
+                    "title": {"type": "string", "description": "Short heuristic title"},
+                    "content": {"type": "string", "description": "Detailed heuristic description"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "domain": {"type": "string", "description": "Applicable domain (e.g. 'amorphous-carbon', 'spintronics')"},
+                    "confidence": {"type": "number", "description": "0.0–1.0 confidence in this heuristic"},
+                    "papers": {"type": "array", "items": {"type": "string"}, "description": "Supporting paper URLs/DOIs"},
+                },
+                "required": ["skill", "title", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_constraint",
+            "description": (
+                "Create an L4 constraint / failure-mode node attached to an L1/L2 skill. "
+                "Use for known limitations, instability regions, or failure patterns (e.g. "
+                "'unsuitable for bond-breaking processes'). Wires a 'constraint_on' edge and "
+                "denormalises the constraint slug into the skill's metadata.failure_modes list."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "Target skill id/slug/alias"},
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "domain": {"type": "string"},
+                    "severity": {"type": "string", "description": "low | medium | high"},
+                    "papers": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["skill", "title", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "decompose_capability",
+            "description": (
+                "Wire a 'decomposes_to' edge from an L1 capability to an L2 procedure that "
+                "implements it. Use to record executable decompositions of high-level skills."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "capability": {"type": "string", "description": "L1 capability id/slug"},
+                    "procedure": {"type": "string", "description": "L2 procedure id/slug"},
+                },
+                "required": ["capability", "procedure"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_plan",
+            "description": (
+                "Stage-1 progressive retrieval: return planner-level skills (L1 capabilities, "
+                "optionally L2 procedures) for a goal. Excludes heuristics/constraints — fetch "
+                "those on demand via retrieve_heuristics / retrieve_constraints once a candidate "
+                "is selected."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "Free-text description of the task"},
+                    "k": {"type": "integer", "default": 5},
+                    "include_l2": {"type": "boolean", "default": True},
+                },
+                "required": ["goal"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_heuristics",
+            "description": (
+                "Stage-2 progressive retrieval: L3 heuristics attached to a selected skill. "
+                "Falls back to semantic search over L3 nodes if no edges exist."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string"},
+                    "k": {"type": "integer", "default": 5},
+                },
+                "required": ["skill"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_constraints",
+            "description": (
+                "Stage-3 progressive retrieval: L4 constraints / failure modes attached to a "
+                "selected skill. Use this when the verifier reports an error or when execution "
+                "uncertainty is high."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string"},
+                    "k": {"type": "integer", "default": 5},
+                },
+                "required": ["skill"],
             },
         },
     },
@@ -1330,6 +1885,76 @@ TOOL_SCHEMAS: list[dict] = [
                 "properties": {
                     "limit": {"type": "integer", "default": 50},
                 },
+            },
+        },
+    },
+    # ------------------------------------------------------------------ #
+    # Generic asset (folder-style) tools                                   #
+    # ------------------------------------------------------------------ #
+    {
+        "type": "function",
+        "function": {
+            "name": "add_asset_to_entry",
+            "description": (
+                "Attach a generic asset (script, reference, doc, example, data file, "
+                "external link, free-form note) to an entry in a named folder. "
+                "Each node is treated as a small folder of typed assets addressable "
+                "as `[entry]/[folder]/[filename]`. "
+                "Conventional folders: scripts, references, docs, examples, data, notes "
+                "(custom folder names are also accepted). "
+                "Use kind='link' for URLs (content = the URL), 'text' for inline "
+                "markdown/notes, 'file' for downloadable bodies."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entry_id": {"type": "string", "description": "ID or slug of the target entry"},
+                    "folder": {
+                        "type": "string",
+                        "description": "Sub-folder name (e.g. scripts, references, docs, examples, data, notes)",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename inside the folder (may include a sub-path like 'inputs/lj.in')",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Body for file/text assets; the URL itself for link assets",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["file", "link", "text"],
+                        "default": "file",
+                    },
+                    "language": {"type": "string", "description": "Optional language hint (python, bash, markdown, …)"},
+                    "mime_type": {"type": "string", "description": "Optional MIME override"},
+                    "description": {"type": "string"},
+                    "requirements": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Package dependencies (for runnable scripts)",
+                    },
+                },
+                "required": ["entry_id", "folder", "filename"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_assets",
+            "description": (
+                "List the assets attached to an entry, grouped by folder. "
+                "Optionally filter to a single folder. Returns metadata + download URLs; "
+                "fetch bodies via the download URL."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "identifier": {"type": "string", "description": "Entry ID or slug"},
+                    "folder": {"type": "string", "description": "Optional folder name filter"},
+                },
+                "required": ["identifier"],
             },
         },
     },
@@ -1469,10 +2094,19 @@ TOOL_DISPATCH: dict[str, Any] = {
     "add_script_to_entry": add_script_to_entry,
     "get_script": get_script,
     "list_scripts": list_scripts,
+    "add_asset_to_entry": add_asset_to_entry,
+    "list_assets": list_assets,
     "build_material_interface_workflow": build_material_interface_workflow,
     "create_material_entry": create_material_entry,
     "attach_script_to_entry": attach_script_to_entry,
     "submit_feedback": submit_feedback,
     "list_by_verification": list_by_verification,
     "list_needs_generalization": list_needs_generalization,
+    # Hierarchical-memory tools (L1–L4 / progressive retrieval)
+    "create_heuristic": create_heuristic,
+    "create_constraint": create_constraint,
+    "decompose_capability": decompose_capability,
+    "retrieve_plan": retrieve_plan,
+    "retrieve_heuristics": retrieve_heuristics,
+    "retrieve_constraints": retrieve_constraints,
 }

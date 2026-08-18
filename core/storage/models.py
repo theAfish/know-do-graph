@@ -21,7 +21,8 @@ class EntryModel(Base):
     aliases = Column(Text, default="[]")        # JSON list
     metadata_json = Column(Text, default="{}")  # JSON object
     internal_refs = Column(Text, default="[]")  # JSON list
-    scripts_json = Column(Text, default="[]")   # JSON list of ScriptAttachment dicts
+    scripts_json = Column(Text, default="[]")   # JSON list of ScriptAttachment dicts (legacy)
+    assets_json = Column(Text, default="[]")    # JSON list of NodeAsset dicts (folder-organised)
     embedding_hash = Column(String, nullable=True)  # sha1 of last-embedded text; null = needs embedding
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
@@ -38,6 +39,7 @@ class EntryModel(Base):
             "metadata": json.loads(self.metadata_json or "{}"),
             "internal_refs": json.loads(self.internal_refs or "[]"),
             "scripts": json.loads(self.scripts_json or "[]"),
+            "assets": json.loads(self.assets_json or "[]"),
         }
 
 

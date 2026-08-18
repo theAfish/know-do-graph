@@ -4,7 +4,9 @@ Mem-Graph entries are shallow, episodic notes captured during agent
 interactions.  Over time, stable patterns may be promoted into full
 Know-Do Graph entries.
 
-Storage is flat JSON files per session, kept under data/memory/.
+Memory traces are ordinary Know-Do Graph entries with ``entry_type="memory"``.
+Session-specific fields live in ``EntryMetadata.custom["memory"]`` and links
+between traces are persisted in the shared edges table.
 
 Connecting external agent frameworks
 --------------------------------------
@@ -51,16 +53,26 @@ be listed, queried, and promoted into full Know-Do Graph entries.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
-_MEMORY_DIR = Path(__file__).parent.parent.parent / "data" / "memory"
-_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+from core.schemas.edge import Edge, EdgeRelation
+from core.schemas.entry import Entry, EntryMetadata, EntryType, RefinementStatus
+from core.storage.database import SessionLocal
+from core.storage.repository import EdgeRepository, EntryRepository
+
+def _default_memory_dir() -> Path:
+    configured = os.environ.get("KDG_MEMORY_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.cwd() / "data" / "memory").resolve()
 
 
 class MemSourceFormat(str, Enum):
@@ -90,39 +102,81 @@ class MemEntry(BaseModel):
 
 
 class MemGraph:
-    """Session-scoped memory graph persisted as a JSON file.
+    """Session-scoped view of memory nodes in the shared graph database.
 
     Parameters
     ----------
     session_id:
-        Logical name for the session.  Determines the storage filename
-        (``data/memory/<session_id>.json``).  Use a stable identifier when
-        you want to resume or extend a session across process restarts.
+        Logical name used to group memory nodes.
+    storage_dir:
+        Deprecated JSON directory. Existing ``<session_id>.json`` files are
+        imported once when the database has no memory nodes for the session.
     """
 
-    def __init__(self, session_id: str = "default") -> None:
+    def __init__(
+        self,
+        session_id: str = "default",
+        *,
+        storage_dir: str | Path | None = None,
+        session_factory: Callable[[], Session] | None = None,
+        graph: Any = None,
+    ) -> None:
+        if not session_id or Path(session_id).name != session_id:
+            raise ValueError("session_id must be a non-empty filename-safe name")
         self.session_id = session_id
+        self.storage_dir = (
+            Path(storage_dir).expanduser().resolve()
+            if storage_dir is not None
+            else _default_memory_dir()
+        )
+        self._session_factory = session_factory or SessionLocal
+        if graph is None and session_factory is None:
+            try:
+                from core.app_state import graph as app_graph
+                graph = app_graph
+            except Exception:
+                graph = None
+        self._graph = graph
         self._entries: dict[str, MemEntry] = {}
+        self._ensure_database()
         self._load()
 
     @property
     def _path(self) -> Path:
-        return _MEMORY_DIR / f"{self.session_id}.json"
+        return self.storage_dir / f"{self.session_id}.json"
+
+    def _ensure_database(self) -> None:
+        from core.storage.models import Base
+
+        with self._session_factory() as db:
+            Base.metadata.create_all(bind=db.get_bind())
 
     def _load(self) -> None:
-        if self._path.exists():
+        with self._session_factory() as db:
+            entries = [
+                entry
+                for entry in EntryRepository(db).get_all()
+                if entry.entry_type == EntryType.memory
+                and _memory_data(entry).get("session_id") == self.session_id
+            ]
+        self._entries = {entry.id: _entry_to_mem(entry) for entry in entries}
+
+        # Backward-compatible one-time import. JSON remains untouched as a
+        # backup, but is no longer read after the session exists in SQLite.
+        if not self._entries and self._path.exists():
             raw = json.loads(self._path.read_text(encoding="utf-8"))
             self._entries = {k: MemEntry(**v) for k, v in raw.items()}
+            self._save()
 
     def _save(self) -> None:
-        self._path.write_text(
-            json.dumps(
-                {k: v.model_dump(mode="json") for k, v in self._entries.items()},
-                indent=2,
-                default=str,
-            ),
-            encoding="utf-8",
-        )
+        with self._session_factory() as db:
+            repo = EntryRepository(db)
+            existing = {entry.id for entry in repo.get_all()}
+            for mem_entry in self._entries.values():
+                entry = _mem_to_entry(mem_entry)
+                saved = repo.update(entry) if entry.id in existing else repo.create(entry)
+                if saved is not None and self._graph is not None:
+                    self._graph.add_entry(saved)
 
     def _make_entry(
         self,
@@ -416,13 +470,98 @@ class MemGraph:
     def delete(self, mem_id: str) -> bool:
         if mem_id not in self._entries:
             return False
+        with self._session_factory() as db:
+            edge_repo = EdgeRepository(db)
+            for edge in edge_repo.get_all():
+                if edge.source_id == mem_id or edge.target_id == mem_id:
+                    edge_repo.delete(edge.id)
+                    if self._graph is not None:
+                        self._graph.remove_edge(edge.source_id, edge.target_id)
+            deleted = EntryRepository(db).delete(mem_id)
+        if not deleted:
+            return False
         del self._entries[mem_id]
-        self._save()
+        if self._graph is not None:
+            self._graph.remove_entry(mem_id)
         return True
 
     @staticmethod
-    def list_sessions() -> list[str]:
-        return [p.stem for p in _MEMORY_DIR.glob("*.json")]
+    def list_sessions(
+        storage_dir: str | Path | None = None,
+        session_factory: Callable[[], Session] | None = None,
+    ) -> list[str]:
+        factory = session_factory or SessionLocal
+        with factory() as db:
+            from core.storage.models import Base
+            Base.metadata.create_all(bind=db.get_bind())
+            sessions = {
+                _memory_data(entry).get("session_id")
+                for entry in EntryRepository(db).get_all()
+                if entry.entry_type == EntryType.memory
+            }
+        sessions.discard(None)
+
+        # Include legacy sessions so callers can discover and trigger import.
+        directory = Path(storage_dir).expanduser().resolve() if storage_dir else _default_memory_dir()
+        if directory.exists():
+            sessions.update(p.stem for p in directory.glob("*.json"))
+        return sorted(str(session) for session in sessions)
+
+    def connect(
+        self,
+        source_id: str,
+        target_id: str,
+        *,
+        relation: EdgeRelation | str = EdgeRelation.related_memory,
+        weight: float = 1.0,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Edge:
+        """Create a typed edge between two memory nodes."""
+        with self._session_factory() as db:
+            entries = {entry.id: entry for entry in EntryRepository(db).get_all()}
+            source = entries.get(source_id)
+            target = entries.get(target_id)
+            if (
+                source is None
+                or target is None
+                or source.entry_type != EntryType.memory
+                or target.entry_type != EntryType.memory
+            ):
+                raise KeyError("Both edge endpoints must be memory nodes")
+            edge = Edge(
+                source_id=source_id,
+                target_id=target_id,
+                relation=EdgeRelation(relation),
+                weight=weight,
+                metadata=metadata or {},
+            )
+            saved = EdgeRepository(db).create(edge)
+        if self._graph is not None:
+            self._graph.add_edge(saved)
+        return saved
+
+    def edges(self, mem_id: str | None = None) -> list[Edge]:
+        """List memory-to-memory edges incident to this session's nodes."""
+        session_ids = set(self._entries)
+        with self._session_factory() as db:
+            memory_ids = {
+                entry.id
+                for entry in EntryRepository(db).get_all()
+                if entry.entry_type == EntryType.memory
+            }
+            edges = [
+                edge
+                for edge in EdgeRepository(db).get_all()
+                if edge.source_id in memory_ids
+                and edge.target_id in memory_ids
+                and (edge.source_id in session_ids or edge.target_id in session_ids)
+            ]
+        if mem_id is not None:
+            edges = [
+                edge for edge in edges
+                if edge.source_id == mem_id or edge.target_id == mem_id
+            ]
+        return edges
 
 
 # ------------------------------------------------------------------
@@ -456,3 +595,54 @@ def _langchain_to_dict(m: Any) -> dict[str, str]:
     role = getattr(m, "type", None) or getattr(m, "role", "unknown")
     content = getattr(m, "content", str(m))
     return {"role": str(role), "content": str(content)}
+
+
+def _memory_data(entry: Entry) -> dict[str, Any]:
+    data = entry.metadata.custom.get("memory", {})
+    return data if isinstance(data, dict) else {}
+
+
+def _entry_to_mem(entry: Entry) -> MemEntry:
+    data = _memory_data(entry)
+    return MemEntry(
+        id=entry.id,
+        session_id=data.get("session_id", "default"),
+        content=entry.content,
+        tags=list(entry.tags),
+        source_entry_ids=list(data.get("source_entry_ids", [])),
+        created_at=entry.metadata.timestamp,
+        success=data.get("success"),
+        promoted=bool(data.get("promoted", False)),
+        promotion_target_id=data.get("promotion_target_id"),
+        source_format=data.get("source_format", MemSourceFormat.manual),
+        raw_source=data.get("raw_source"),
+    )
+
+
+def _mem_to_entry(mem: MemEntry) -> Entry:
+    first_line = next((line.strip("# ").strip() for line in mem.content.splitlines() if line.strip()), "")
+    title = first_line[:80] or f"Memory {mem.id[:8]}"
+    return Entry(
+        id=mem.id,
+        title=title,
+        entry_type=EntryType.memory,
+        content=mem.content,
+        tags=list(mem.tags),
+        metadata=EntryMetadata(
+            timestamp=mem.created_at,
+            source_provenance=f"memory:{mem.session_id}",
+            extraction_method=mem.source_format.value,
+            refinement_status=RefinementStatus.raw,
+            custom={
+                "memory": {
+                    "session_id": mem.session_id,
+                    "source_entry_ids": list(mem.source_entry_ids),
+                    "success": mem.success,
+                    "promoted": mem.promoted,
+                    "promotion_target_id": mem.promotion_target_id,
+                    "source_format": mem.source_format.value,
+                    "raw_source": mem.raw_source,
+                }
+            },
+        ),
+    )

@@ -1,8 +1,7 @@
-import * as d3 from 'd3';
 import { api } from '../api.js';
-import { colorFor } from '../constants.js';
 import { state, emit, on, EVENTS } from '../state.js';
 import { getSelections } from '../graph/render.js';
+import { applyColoring } from '../graph/coloring.js';
 import { debounce } from '../utils.js';
 
 let searchInput;
@@ -16,12 +15,13 @@ export function initSearch() {
 
   searchInput.addEventListener('input', onSearchInput);
   typeFilter.addEventListener('change', () => {
+    queueDatasetSearch();
     runFilters();
     emit(EVENTS.FILTERS_CHANGED);
   });
 
   on(EVENTS.GRAPH_LOADED, () => runFilters());
-  on(EVENTS.SCORE_MODE_CHANGED, () => runFilters());
+  on(EVENTS.COLOR_MODE_CHANGED, () => applyColoring());
 }
 
 const apiSearchDebounced = debounce(async (q, type) => {
@@ -42,15 +42,37 @@ const apiSearchDebounced = debounce(async (q, type) => {
 function onSearchInput() {
   const q = searchInput.value.trim();
   const type = typeFilter.value;
+  state.searchQuery = q;
 
-  if (q.length >= 2 && !q.startsWith('#')) {
+  if (usesDatasetSearch() && q.length >= 2) {
+    state.apiMatchIds = null;
+    state.searchScores = {};
+    datasetSearchDebounced(q, type);
+  } else if (q.length >= 2 && !q.startsWith('#')) {
     apiSearchDebounced(q, type);
   } else {
     state.apiMatchIds = null;
     state.searchScores = {};
+    emit(EVENTS.GRAPH_SEARCH_CLEAR);
   }
   runFilters();
   emit(EVENTS.FILTERS_CHANGED);
+}
+
+const datasetSearchDebounced = debounce((q, type) => {
+  emit(EVENTS.GRAPH_SEARCH_REQUEST, { q, type });
+}, 350);
+
+function usesDatasetSearch() {
+  return state.dataset?.capabilities?.includes('search');
+}
+
+function queueDatasetSearch() {
+  const q = searchInput?.value.trim() || '';
+  state.searchQuery = q;
+  if (usesDatasetSearch() && q.length >= 2) {
+    datasetSearchDebounced(q, typeFilter?.value || '');
+  }
 }
 
 function runFilters() {
@@ -91,7 +113,7 @@ function runFilters() {
   sceneSel.selectAll('.edge').style('display', (e) => visiblePair(e, visible));
   sceneSel.selectAll('.edge-label').style('display', (e) => visiblePair(e, visible));
 
-  applyScoreColoring(textQ || tagFilter);
+  applyColoring();
   updateStats(visible.size, !!(textQ || tagFilter || type));
 }
 
@@ -99,42 +121,6 @@ function visiblePair(e, visible) {
   const si = e.source.id || e.source;
   const ti = e.target.id || e.target;
   return visible.has(si) && visible.has(ti) ? null : 'none';
-}
-
-function applyScoreColoring(searching) {
-  const { sceneSel } = getSelections();
-  if (!sceneSel) return;
-
-  if (state.scoreMode) {
-    sceneSel
-      .selectAll('.node circle')
-      .attr('fill', (d) => {
-        const s = state.searchScores[d.id];
-        if (searching && s != null) return d3.interpolateInferno(0.2 + s * 0.75);
-        return colorFor(d.entry_type);
-      })
-      .attr('stroke', (d) => {
-        const s = state.searchScores[d.id];
-        if (searching && s != null) {
-          const c = d3.color(d3.interpolateInferno(0.2 + s * 0.75));
-          return c ? c.brighter(0.6).toString() : '#fff';
-        }
-        return d3.color(colorFor(d.entry_type)).brighter(1).toString();
-      });
-    sceneSel.selectAll('.node .score-label').each(function (d) {
-      const s = state.searchScores[d.id];
-      const show = searching && s != null;
-      d3.select(this)
-        .style('display', show ? null : 'none')
-        .text(show ? Math.round(s * 100) + '%' : '');
-    });
-  } else {
-    sceneSel
-      .selectAll('.node circle')
-      .attr('fill', (d) => colorFor(d.entry_type))
-      .attr('stroke', (d) => d3.color(colorFor(d.entry_type)).brighter(1).toString());
-    sceneSel.selectAll('.node .score-label').style('display', 'none');
-  }
 }
 
 function updateStats(visibleCount, filtering) {

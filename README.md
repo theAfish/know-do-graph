@@ -2,12 +2,318 @@
 
 A wiki-native, agent-oriented infrastructure for **executable knowledge**, **operational memory**, and **capability discovery**.
 
+## Graph kinds
+
+The server determines the graph kind from the database. A `graph_metadata`
+declaration is authoritative; otherwise, a database with an entry type outside
+the native KDG enum is a Custom Graph. A database containing only native types
+is a Know-Do Graph and keeps its L1--L4 progressive retrieval behavior.
+Custom graphs use the same SQLite `entries` / `edges` tables, but their
+`entry_type` values are displayed and filtered exactly as stored; they are not
+assigned KDG skill levels and `/retrieve/*` returns `409`.
+
+For an imported graph whose real types were saved in `metadata_json.subtype`,
+promote them once with:
+
+```bash
+python3 scripts/promote_subtypes_to_entry_types.py data/vasp_graph_kdg.db
+KDG_DB_PATH=data/vasp_graph_kdg.db uvicorn api.main:app
+```
+
 Entries are the primary object — wiki pages that agents can read, traverse, and evolve.  
 The graph emerges naturally from `[[wikilink]]` references between entries.
 
 ---
 
 ## Quick start
+
+### Install from PyPI
+
+```bash
+pip install know-do-graph
+
+# Create an empty ./data/know_do_graph.db
+know-do-graph init
+
+# Or start from the database bundled with the package
+know-do-graph init --starter
+
+know-do-graph serve
+```
+
+The starter database is copied into the working location; the installed package
+is never used as the writable database. Existing databases are not replaced
+unless `--force` is explicitly provided.
+
+To choose another database path, set `KDG_DB_PATH` in the environment or in a
+`.env` file in the directory where the command is run:
+
+```bash
+KDG_DB_PATH=./my-data/my-memory.db
+```
+
+Relative `KDG_DB_PATH` values are resolved from the current working directory.
+
+### Optional embeddings
+
+The default install does not include a local embedding model stack, so it will
+not download PyTorch. Search still works through the keyword path; `hybrid` and
+`semantic` retrieval fall back gracefully when no embedding provider is enabled.
+
+To use a local `sentence-transformers` model:
+
+```bash
+pip install "know-do-graph[local-embeddings]"
+export KDG_EMBED_PROVIDER=local
+export KDG_EMBED_MODEL="sentence-transformers/all-MiniLM-L6-v2"  # optional
+```
+
+To use an OpenAI-compatible embeddings API instead:
+
+```bash
+export KDG_EMBED_PROVIDER=openai
+export KDG_EMBED_MODEL="text-embedding-3-small"
+export KDG_EMBED_DIM=384
+export KDG_EMBED_API_KEY="..."                         # or OPENAI_API_KEY
+export KDG_EMBED_BASE_URL="https://example.com/v1"     # optional
+```
+
+`KDG_EMBED_DIM` defaults to `384`, matching the bundled SQLite vector table.
+If your provider does not support choosing dimensions, use a model that returns
+384-dimensional vectors or keyword retrieval will continue to be the reliable
+fallback.
+
+### Python API
+
+Use the high-level client to embed the graph directly in an agent process:
+
+```python
+from know_do_graph import EdgeRelation, EntryType, KnowDoGraph
+
+graph = KnowDoGraph("data/my_agent.db")
+
+skill = graph.add(
+    "Relax an atomic structure",
+    entry_type=EntryType.capability,
+    content="Choose a calculator, then run [[ASE Relaxation]].",
+    tags=["atomistic"],
+)
+procedure = graph.add(
+    "ASE Relaxation",
+    entry_type=EntryType.procedure,
+    content="Attach a calculator and run an ASE optimizer.",
+)
+graph.connect(skill.id, procedure.id, relation=EdgeRelation.decomposes_to)
+
+planner_context = graph.plan("relax this crystal")
+execution_context = graph.expand(skill.slug, stages=["decomposition"])
+
+selected = planner_context[0]
+attached = graph.count_attached(selected.id)
+if attached["heuristics"]:
+    heuristics, total = graph.search_attached(
+        selected.id,
+        kind="heuristics",
+        query="force convergence",
+        mode="hybrid",
+    )
+
+memory = graph.memory("run-42")
+first = memory.add(
+    "FIRE converged at fmax=0.03.",
+    tags=["success"],
+    success=True,
+)
+second = memory.add("The result reproduced with a tighter force threshold.")
+memory.connect(first.id, second.id)
+graph.close()
+```
+
+The main methods are `add`, `get`, `list`, `search`, `update`, `delete`,
+`connect`, `related`, `plan`, `heuristics`, `constraints`, `count_attached`,
+`search_attached`, `expand`, and `memory`. IDs, slugs, and aliases are accepted
+anywhere an entry identifier is required. `count_attached()` and
+`search_attached()` provide embedded clients the same scoped L3/L4 progressive
+retrieval as `GET /remote/entry/{id}`, `/heuristics`, and `/constraints`.
+Each client owns its database engine, so multiple graph databases can be used
+safely in the same process.
+
+### Disabled nodes
+
+Set `metadata.disabled` when creating a node, or use `set_disabled()` to hide
+an existing node without deleting its stored content or edges. Disabled nodes
+are excluded from ordinary `get`, `list`, `search`, traversal, and graph-view
+results. Their edges remain stored and become visible again when the node is
+re-enabled.
+
+```python
+# Hide a node and all of its incident edges from normal retrieval.
+graph.set_disabled(skill.id, True)
+assert graph.get(skill.id) is None
+assert graph.search("atomic structure") == []
+
+# Administrative audit: explicitly query only disabled nodes.
+disabled_nodes = graph.list_disabled()
+disabled_hits = graph.search("atomic structure", disabled=True)
+
+# Restore the node and its persisted graph connections.
+graph.set_disabled(skill.id, False)
+```
+
+The REST equivalent is:
+
+```bash
+# Disable or restore by ID, slug, or alias.
+curl -X PUT http://127.0.0.1:8000/entries/<id-or-slug>/disabled \
+  -H "Content-Type: application/json" \
+  -d '{"disabled": true}'
+
+# Explicitly list/search disabled nodes. Normal requests exclude them.
+curl "http://127.0.0.1:8000/entries/?disabled=true"
+curl "http://127.0.0.1:8000/entries/search?q=structure&disabled=true"
+curl "http://127.0.0.1:8000/remote/search?q=structure&disabled=true"
+```
+
+### Python chat API
+
+Configure an OpenAI or OpenAI-compatible provider:
+
+```bash
+export OPENAI_API_KEY="..."
+export OPENAI_API_BASE="https://your-provider.example/v1"  # optional
+export GRAPH_AGENT_MODEL="qwen-plus"                       # optional
+```
+
+Create a stateful, read-only conversation for question answering:
+
+```python
+from know_do_graph import KnowDoGraph
+
+graph = KnowDoGraph("data/my_agent.db")
+chat = graph.chat(read_only=True, model="qwen-plus")
+
+print(chat.send("Which skills can construct a material interface?"))
+print(chat.send("What constraints apply to the best candidate?"))
+
+chat.reset()
+graph.close()
+```
+
+Allow the agent to add, update, link, and retrieve graph knowledge:
+
+```python
+def on_step(event: str, data: dict) -> None:
+    if event in {"tool_call", "tool_result"}:
+        print(event, data)
+
+with KnowDoGraph("data/my_agent.db") as graph:
+    chat = graph.chat(model="qwen-plus", on_step=on_step)
+    reply = chat.send(
+        "Add a reusable capability for validating atomistic relaxations. "
+        "Search for duplicates and connect it to relevant procedures."
+    )
+    print(reply)
+```
+
+Route a broader task through the orchestrator, or run a review batch:
+
+```python
+with KnowDoGraph("data/my_agent.db") as graph:
+    orchestrator = graph.chat(agent="orchestrator", model="qwen-plus")
+    print(orchestrator.send("Improve weak coverage around phonon workflows."))
+
+    reviewer = graph.chat(agent="reviewer", model="qwen-plus", batch_size=3)
+    print(reviewer.review("Focus on duplicate titles and inconsistent tags."))
+```
+
+For reusable integrations, configure a policy and use structured node review:
+
+```python
+from know_do_graph import EntryType, ReviewPolicy, VerificationStatus
+
+policy = ReviewPolicy(
+    exclude_types={EntryType.memory},
+    protected_statuses={
+        VerificationStatus.peer_reviewed,
+        VerificationStatus.community_tested,
+    },
+    assignable_statuses={
+        VerificationStatus.unverified,
+        VerificationStatus.self_tested,
+        VerificationStatus.bugged,
+        VerificationStatus.deprecated,
+    },
+    allowed_actions={"modify", "delete", "distill", "merge_similar", "link"},
+)
+
+with KnowDoGraph("data/my_agent.db") as graph:
+    reviewer = graph.chat(
+        agent="reviewer",
+        policy=policy,
+        strategy="seed",  # seed, global, or auto
+        batch_size=10,
+        on_status=lambda status: print(status["progress"]),
+    )
+    result = reviewer.review_nodes()
+
+    scheduler = graph.auto_review(
+        threshold=20,
+        policy=policy,
+        strategy="auto",
+        include_existing=True,
+        model="qwen-plus",
+    )
+```
+
+`seed` expands from a weighted random under-reviewed node through neighbors
+and similar entries. `global` prioritizes under-reviewed, isolated, and highly
+connected nodes using graph statistics. Policy checks run inside every review
+mutation tool; protected nodes may still be linked but cannot be changed,
+deleted, distilled, merged, or have review metadata updated. The automatic
+scheduler counts eligible, unreviewed nodes created through this `KnowDoGraph`
+client and runs in a background thread when the threshold is reached. Set
+`include_existing=True` to count an existing eligible backlog when the
+scheduler is attached. Call `scheduler.stop()` to disable it.
+
+Review raw memory separately and receive structured progress/results:
+
+```python
+def on_status(status: dict) -> None:
+    print(status["status"], status["progress"])
+
+with KnowDoGraph("data/my_agent.db") as graph:
+    reviewer = graph.chat(
+        agent="reviewer",
+        model="qwen-plus",
+        batch_size=10,
+        on_status=on_status,
+    )
+    result = reviewer.review_memory(session_id="matcreator")
+    print(result["results"], result["errors"])
+```
+
+Memory review samples only unpromoted `memory` nodes. It classifies each trace
+as L1/L2/L3/L4, noise, or skip. L1/L2 become unverified capability/procedure
+nodes; L3/L4 become heuristic/constraint nodes linked to an existing L1/L2
+node. Successful distillation deletes the raw memory node; noise is also
+deleted.
+
+Applications can use the polling API instead of running reviewer logic locally:
+
+```bash
+curl -X POST http://127.0.0.1:8000/agent/review/memory \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"matcreator","batch_size":10}'
+
+curl http://127.0.0.1:8000/agent/review/memory/<job-id>
+```
+
+Credentials may also be passed directly with `api_key=` and `base_url=`.
+Use `graph.ask("...", read_only=True)` for a one-shot conversation.
+For async applications, call `await asyncio.to_thread(chat.send, message)`.
+See `examples/chat_api.py` for complete examples.
+
+### Install from source
 
 ```bash
 # 1. Create and activate a virtual environment
@@ -34,6 +340,35 @@ python main.py serve
 > ```
 > Re-run whenever you edit files under `frontend/src/` or `frontend/styles/`.
 
+### Release to PyPI from GitHub
+
+This repository is set up so the Python package version comes from the Git tag
+used for the release. A GitHub release published from tag `v0.1.1` will build
+package version `0.1.1` and publish it to PyPI automatically.
+
+One-time setup:
+
+1. In PyPI, create a trusted publisher for this repository.
+2. In GitHub, make sure Actions are enabled for the repository.
+3. Publish releases from version tags like `v0.1.1`, `v0.2.0`, and so on.
+
+Release flow:
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+Then publish a GitHub release for that tag. The workflow at
+`.github/workflows/release-pypi.yml` will:
+
+1. build the frontend assets,
+2. build the Python sdist and wheel,
+3. publish the package to PyPI using GitHub's OIDC trusted publishing.
+
+If you want to test the PyPI connection first, point the same workflow at
+TestPyPI before using the production publisher.
+
 ### Frontend development (hot-reload)
 
 ```bash
@@ -49,7 +384,21 @@ cd frontend && npm run dev
 
 ## CLI reference
 
-All commands are available via `python main.py`.
+Commands are available via `know-do-graph` after a package installation or
+`python main.py` from a source checkout.
+
+### Database initialization
+
+```bash
+# Create an empty database if one does not exist
+know-do-graph init
+
+# Copy the bundled starter database
+know-do-graph init --starter
+
+# Explicitly replace an existing database with the starter
+know-do-graph init --starter --force
+```
 
 ### Entry management
 
@@ -142,6 +491,29 @@ A built-in browser frontend for visualising and debugging the graph is served at
 
 Open it at `http://127.0.0.1:8000/ui` while the server is running.
 
+#### Viewing LRG projection databases
+
+When the configured SQLite database has no KDG `entries` but contains the
+layered LRG tables (`levels`, `supernodes`, `supernode_members`, and
+`coarse_edges`), the server recognises it as a **read-only LRG hierarchical
+projection**. The UI then provides a resolution selector and an overview-size
+selector. It starts with the most connected 600 nodes and their induced edges,
+which keeps dense projections responsive; choose a larger overview to inspect
+more of the hierarchy. Searches run across every node at the selected
+resolution (not only the overview sample) and temporarily render the matching
+subgraph; **Back to overview** restores the sampled view.
+
+The adapter identifies the schema rather than relying on a database filename.
+Normal KDG databases retain their existing editable behavior, even if they also
+contain analysis tables. The adapter contract in `core/graph/datasets.py` is
+format-neutral: each future format declares its capabilities, graph controls,
+presentation defaults, and optional hierarchy view. The frontend creates its
+controls from that descriptor, rather than branching on a database kind.
+
+For LRG, select a clustered node at level *N* and choose **Show constituents at
+level N−1** in the detail panel. This renders containment links to the finer
+resolution. **Back to overview** returns to the regular graph view.
+
 ---
 
 ## API reference
@@ -152,11 +524,14 @@ Interactive docs at `http://127.0.0.1:8000/docs` once the server is running.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/entries/` | List entries (paginated) |
-| `GET` | `/entries/search?q=...&tags=...&entry_type=...` | Full-text search |
+| `GET` | `/entries/` | List enabled entries (paginated) |
+| `GET` | `/entries/?disabled=true` | List disabled entries; normal lists exclude them |
+| `GET` | `/entries/search?q=...&tags=...&entry_type=...` | Full-text search over enabled entries |
+| `GET` | `/entries/search?q=...&tags=...&entry_type=...&disabled=true` | Full-text search; pass `disabled=true` to audit disabled nodes |
 | `GET` | `/entries/{id}` | Get entry by ID or slug |
 | `POST` | `/entries/` | Create entry |
 | `PUT` | `/entries/{id}` | Update entry |
+| `PUT` | `/entries/{id}/disabled` | Set `{"disabled": true|false}` without deleting the node |
 | `DELETE` | `/entries/{id}` | Delete entry |
 | `GET` | `/entries/{id}/related?depth=1&relation=...` | Traverse related entries |
 | `GET` | `/entries/{id}/edges` | All edges incident to an entry |
@@ -186,6 +561,52 @@ Interactive docs at `http://127.0.0.1:8000/docs` once the server is running.
 | `POST` | `/mem/{session}/ingest/raw` | Ingest arbitrary JSON |
 | `DELETE` | `/mem/{session}/{mem_id}` | Delete a trace |
 | `POST` | `/mem/{session}/{mem_id}/promote` | Promote trace → KDG entry |
+
+### Progressive retrieval (hierarchical memory)
+
+The graph is organised into four orthogonal **skill levels** so planning
+context stays small and operational details are pulled on demand.
+
+| Level | Stored as | Purpose |
+|-------|-----------|---------|
+| **L1 — Capability** | `entry_type` ∈ {`capability`, `workflow`} | Reusable high-level abilities (planner-facing) |
+| **L2 — Procedure**  | `entry_type` = `procedure` | Executable workflow decomposition |
+| **L3 — Heuristic**  | `entry_type` = `heuristic` | Empirical, conditional guidance (cooling rate ⇒ sp2/sp3 ratio, …) |
+| **L4 — Constraint** | `entry_type` = `constraint` | Known failure modes / instability regions |
+
+`EntryMetadata.skill_level` may override the level explicitly. New typed edges
+wire the layers together:
+
+- `decomposes_to` (L1 → L2)
+- `heuristic_for` (L3 → L1/L2)
+- `constraint_on` (L4 → L1/L2)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/retrieve/plan?goal=…&k=5&include_l2=true` | L1 (+ L2) candidates for a goal — planner context |
+| `GET` | `/retrieve/heuristics?skill=<id\|slug>&k=5` | L3 heuristics attached to a skill (fallback: semantic) |
+| `GET` | `/retrieve/constraints?skill=<id\|slug>&k=5` | L4 constraints / failure modes (fallback: semantic) |
+| `GET` | `/retrieve/expand/{skill}?stages=heuristics,constraints,decomposition` | Bundle used by verifier / debugging loops |
+
+Recommended flow::
+
+    goal → /retrieve/plan
+         → pick skill, execute
+         → on verifier feedback or uncertainty
+         → /retrieve/heuristics  +  /retrieve/constraints
+         → refinement / debugging
+
+GraphAgent exposes the same staging as tools (`retrieve_plan`,
+`retrieve_heuristics`, `retrieve_constraints`) plus `create_heuristic`,
+`create_constraint`, and `decompose_capability` so it can grow the L3/L4
+layer instead of dumping operational knowledge into capability content.
+
+To migrate an existing graph:
+
+```bash
+python scripts/backfill_skill_levels.py --dry-run   # preview
+python scripts/backfill_skill_levels.py             # apply
+```
 
 ---
 
@@ -248,14 +669,19 @@ curl http://<host>:<port>/remote
 |--------|------|-------------|
 | `GET` | `/` | Instruction sheet (plain text) |
 | `GET` | `/remote` | Same instruction sheet |
-| `POST` | `/remote/chat` | Chat with the orchestrator agent |
-| `GET` | `/remote/search` | Search entries (`?q=&tags=&entry_type=&limit=`) |
+| `POST` | `/remote/chat` | Chat with the orchestrator agent (read-only; agents and humans) |
+| `GET` | `/remote/search` | Search entries (`?q=&tags=&entry_type=&limit=&disabled=`) |
 | `GET` | `/remote/graph` | Graph stats + full node/edge dump |
-| `GET` | `/remote/entry/{id}` | Entry by ID, slug, or alias |
+| `GET` | `/remote/entry/{id}` | Entry by ID, slug, or alias, including attached L3/L4 counts |
+| `GET` | `/remote/entry/{id}/heuristics` | Query-filtered L3 heuristics attached to one entry |
+| `GET` | `/remote/entry/{id}/constraints` | Query-filtered L4 constraints attached to one entry |
 | `GET` | `/remote/entry/{id}/related` | Related entries via BFS (`?depth=1&relation=`) |
 | `POST` | `/remote/feedback` | Free-form feedback trace; optionally also updates an entry's verification (pass `entry_id` + `verdict`) |
 | `POST` | `/entries/{id}/feedback` | Direct per-entry verification feedback |
 | `DELETE` | `/remote/session/{id}` | Clear a session's chat history |
+| `POST` | `/remote/submit` | Deposit raw knowledge into the inbox (agents and humans) |
+| `GET` | `/remote/inbox` | List pending inbox submissions awaiting distillation (humans) |
+| `POST` | `/remote/distill` | Run graph agent to convert inbox into proper nodes (humans) |
 
 ### Chat (one-shot)
 
@@ -299,6 +725,9 @@ curl "http://<host>:<port>/remote/search?entry_type=tool"
 
 # Combined: text + tags
 curl "http://<host>:<port>/remote/search?q=ase&tags=python,simulation"
+
+# Administrative audit: disabled nodes are excluded by default
+curl "http://<host>:<port>/remote/search?q=ase&disabled=true"
 ```
 
 ### Feedback / observations
@@ -345,6 +774,76 @@ The `MaintenanceAgent` exposes `list_unverified()`, `list_bugged()`, and
 
 Promote feedback traces to entries via `POST /mem/{session_id}/{mem_id}/promote`.
 
+### Knowledge inbox (submit → review → distill)
+
+External agents — and humans — can deposit raw knowledge into an **inbox** for
+later review and distillation into proper graph nodes.  Nothing touches the
+graph until you explicitly trigger distillation, so you stay in control of what
+gets added.
+
+**Step 1 — Submit** (agents or humans)
+
+```bash
+# Plain-text summary or context dump
+curl -X POST http://<host>:<port>/remote/submit \
+     -H "Content-Type: application/json" \
+     -d '{
+       "title": "MACE geometry optimisation walkthrough",
+       "content": "We used MACE-MP-0 to relax a bulk Fe structure ...",
+       "tags": ["mace", "relaxation"],
+       "agent_id": "matcreator-01"
+     }'
+
+# OpenAI-style conversation transcript
+curl -X POST http://<host>:<port>/remote/submit \
+     -H "Content-Type: application/json" \
+     -d '{
+       "title": "ASE relaxation session",
+       "format": "openai",
+       "messages": [
+         {"role": "user",      "content": "How do I relax a structure with ASE?"},
+         {"role": "assistant", "content": "Use BFGS with an Atoms object ..."}
+       ],
+       "agent_id": "matcreator-01"
+     }'
+```
+
+The submission is stored as a memory trace tagged `pending-distillation` and
+returns the entry `id` for reference.
+
+**Step 2 — Review the inbox** (humans)
+
+```bash
+curl http://<host>:<port>/remote/inbox
+# → list of pending submissions with a 300-char preview each
+
+# Scope to a specific agent's session
+curl "http://<host>:<port>/remote/inbox?session_id=matcreator-01"
+```
+
+**Step 3 — Distill** (humans, when ready)
+
+```bash
+# Process all pending submissions and create graph nodes
+curl -X POST http://<host>:<port>/remote/distill \
+     -H "Content-Type: application/json" \
+     -d '{}'
+
+# Preview what the agent would receive without touching the graph
+curl -X POST http://<host>:<port>/remote/distill \
+     -H "Content-Type: application/json" \
+     -d '{"dry_run": true}'
+
+# Distil only one agent's submissions
+curl -X POST http://<host>:<port>/remote/distill \
+     -H "Content-Type: application/json" \
+     -d '{"session_id": "matcreator-01"}'
+```
+
+The graph agent reads every pending submission, extracts reusable
+capabilities/procedures/tools (following the abstraction rules), and marks the
+inbox entries as promoted so they are not processed again.
+
 ### Starting the server for remote access
 
 ```bash
@@ -363,7 +862,10 @@ want the `/remote/chat` endpoint to work.
 ## Connecting agent frameworks
 
 MemGraph accepts session data in whichever format the agent framework already
-produces.  Pick the adapter that matches your stack.
+produces. Memory traces are stored in the same SQLite database as all other
+nodes with `entry_type="memory"`. Session and ingestion details are retained in
+entry metadata, and memory nodes can be connected with normal graph edges.
+Pick the adapter that matches your stack.
 
 ### OpenAI / OpenAI-compatible APIs
 
@@ -469,7 +971,7 @@ Supported `entry_type` values: `capability`, `procedure`, `workflow`, `tool`,
 `repository`, `environment`, `dependency`, `data`, `analytical`, `memory`, `generic`.
 
 Supported edge `relation` values: `dependency`, `compatible_with`, `alternative_to`,
-`related_workflow`, `generated_from`, `memory_of`, `refinement_of`, `derived_from`,
+`related_workflow`, `generated_from`, `memory_of`, `related_memory`, `refinement_of`, `derived_from`,
 `warning_about`, `cited_by`, `wikilink`, `prerequisite`, `replacement`,
 `execution_pathway`, `transformation`, `provenance`, `compatibility`.
 
@@ -499,8 +1001,8 @@ api/
     remote.py         Remote agent access + instruction sheet endpoints
 
 data/
-  know_do_graph.db    SQLite database (auto-created)
-  memory/             Per-session JSON memory files
+  know_do_graph.db    Default working SQLite database
+  memory/             Legacy JSON memory files (imported into SQLite on first access)
   nodes/              YAML entry exports (via `graph export`)
 
 examples/
@@ -537,7 +1039,22 @@ raw mem trace  →  linked note  →  refined capability entry  →  validated k
 
 ## Development notes
 
-- The SQLite database is at `data/know_do_graph.db` and is created automatically on first run.
+- The default SQLite database is `./data/know_do_graph.db`, relative to the
+  directory where the process is started.
+- Set `KDG_DB_PATH` to configure a different filename or path.
+- `init` creates an empty database; `init --starter` copies the bundled starter
+  database to the working path.
+- To package the current development database as the next starter, stop the API
+  server and run:
+
+  ```bash
+  ./scripts/build_starter.sh
+  ```
+
+  The script checkpoints `data/know_do_graph.db`, copies it to the tracked
+  release snapshot at `assets/starter.db`, builds the source distribution and
+  wheel into `dist/`, and verifies that the wheel contains the complete starter
+  database. The live database under `data/` is ignored by Git.
 - The in-memory networkx graph is rebuilt from the database on every server startup (or via `MaintenanceAgent.rebuild_graph()`).
 - All timestamps are UTC.
 - Vector indexing and heavyweight graph databases are intentionally deferred — the architecture supports adding them later without structural changes.

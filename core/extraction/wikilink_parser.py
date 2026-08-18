@@ -16,8 +16,32 @@ def extract_external_refs(content: str) -> list[str]:
     return _MDLINK_RE.findall(content)
 
 
+_CHAR_SUBS: dict[str, str] = {
+    "Å": "angstrom",
+    "å": "angstrom",
+    "µ": "micro",
+    "μ": "micro",
+    "°": "deg",
+    "±": "plus-minus",
+    "×": "x",
+    "·": "-",
+}
+
+
 def slug_from_title(title: str) -> str:
-    slug = title.lower().strip()
+    import unicodedata
+    for sym, replacement in _CHAR_SUBS.items():
+        title = title.replace(sym, f" {replacement} ")
+    parts: list[str] = []
+    for ch in unicodedata.normalize("NFKD", title):
+        if ch.isascii():
+            parts.append(ch)
+        elif unicodedata.combining(ch):
+            pass
+        else:
+            name = unicodedata.name(ch, "").lower()
+            parts.append(name.split()[-1] if name else "")
+    slug = "".join(parts).lower().strip()
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = re.sub(r"-+", "-", slug)

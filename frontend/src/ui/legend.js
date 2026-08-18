@@ -1,21 +1,43 @@
-import { TYPE_COLORS } from '../constants.js';
+import { VERIFICATION_COLORS, LEVEL_COLORS, COLOR_MODES, colorsForTypes } from '../constants.js';
 import { state, on, EVENTS } from '../state.js';
 
 export function initLegend() {
   renderLegend();
-  on(EVENTS.SCORE_MODE_CHANGED, renderLegend);
+  on(EVENTS.COLOR_MODE_CHANGED, renderLegend);
+  on(EVENTS.SCORE_MODE_CHANGED, renderLegend); // compat
   on(EVENTS.FILTERS_CHANGED, renderLegend);
+  on(EVENTS.GRAPH_LOADED, renderLegend);
 }
 
 function renderLegend() {
   const el = document.getElementById('legend');
   if (!el) return;
 
-  const showScore = state.scoreMode && Object.keys(state.searchScores).length > 0;
+  const mode = state.colorMode || 'type';
+  const cfg = COLOR_MODES.find((m) => m.value === mode) || COLOR_MODES[0];
 
-  if (showScore) {
-    el.innerHTML = `
-      <div class="leg-title">Relevance</div>
+  if (cfg.kind === 'ramp') {
+    renderRamp(el, cfg, mode);
+    return;
+  }
+
+  if (mode === 'verification') {
+    renderSwatches(el, 'Verification', VERIFICATION_COLORS);
+    return;
+  }
+
+  if (mode === 'level') {
+    renderSwatches(el, 'Skill level', LEVEL_COLORS);
+    return;
+  }
+
+  renderSwatches(el, 'Entry types', colorsForTypes(new Set(state.allNodes.map((node) => node.entry_type))));
+}
+
+function renderRamp(el, cfg, mode) {
+  const bounds = rampBounds(mode);
+  el.innerHTML = `
+      <div class="leg-title">${cfg.label}</div>
       <svg class="score-ramp-svg" width="160" height="14">
         <defs>
           <linearGradient id="ramp-grad" x1="0" x2="1" y1="0" y2="0">
@@ -28,15 +50,48 @@ function renderLegend() {
         </defs>
         <rect width="160" height="14" fill="url(#ramp-grad)" rx="3"/>
       </svg>
-      <div class="ramp-labels"><span>low</span><span>high</span></div>`;
-    return;
-  }
+      <div class="ramp-labels"><span>${bounds.low}</span><span>${bounds.high}</span></div>`;
+}
 
-  el.innerHTML = '<div class="leg-title">Entry types</div>';
-  Object.entries(TYPE_COLORS).forEach(([type, color]) => {
+function rampBounds(mode) {
+  const nodes = state.allNodes || [];
+  if (mode === 'relevance') {
+    const has = Object.keys(state.searchScores || {}).length > 0;
+    return { low: has ? 'low' : 'search to score', high: 'high' };
+  }
+  if (mode === 'timestamp') {
+    const ts = nodes
+      .map((n) => n.timestamp && +new Date(n.timestamp))
+      .filter((v) => v && !Number.isNaN(v));
+    if (!ts.length) return { low: '—', high: '—' };
+    return {
+      low: new Date(Math.min(...ts)).toISOString().slice(0, 10),
+      high: new Date(Math.max(...ts)).toISOString().slice(0, 10),
+    };
+  }
+  if (mode === 'usage_count') {
+    const vs = nodes
+      .filter((n) => typeof n.usage_count === 'number')
+      .map((n) => n.usage_count);
+    if (!vs.length) return { low: '—', high: '—' };
+    return { low: String(Math.min(...vs)), high: String(Math.max(...vs)) };
+  }
+  if (mode === 'trust_score') {
+    const vs = nodes
+      .filter((n) => typeof n.trust_score === 'number')
+      .map((n) => n.trust_score);
+    if (!vs.length) return { low: '—', high: '—' };
+    return { low: Math.min(...vs).toFixed(2), high: Math.max(...vs).toFixed(2) };
+  }
+  return { low: 'low', high: 'high' };
+}
+
+function renderSwatches(el, title, colors) {
+  el.innerHTML = `<div class="leg-title">${title}</div>`;
+  for (const [key, color] of Object.entries(colors)) {
     const item = document.createElement('div');
     item.className = 'leg-item';
-    item.innerHTML = `<div class="leg-dot" style="background:${color}"></div>${type}`;
+    item.innerHTML = `<div class="leg-dot" style="background:${color}"></div>${key}`;
     el.appendChild(item);
-  });
+  }
 }

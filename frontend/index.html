@@ -45,14 +45,21 @@
         <option value="">All types</option>
       </select>
 
+      <div id="dataset-controls" class="dataset-controls" hidden></div>
+
       <div class="toolbar-actions">
         <button id="toggle-labels" class="btn" type="button">Labels</button>
-        <button id="toggle-score" class="btn" type="button">Relevance</button>
+        <label class="color-mode-wrap">
+          Color:
+          <select id="color-mode" aria-label="Node color mode"></select>
+        </label>
         <button id="reset-view" class="btn" type="button">Reset view</button>
+        <button id="return-overview" class="btn" type="button" hidden>Back to overview</button>
       </div>
 
       <div class="toolbar-status">
         <span id="live-badge" class="badge">● live</span>
+        <span id="dataset-info" class="stats" hidden></span>
         <span id="stats" class="stats">Loading…</span>
       </div>
     </header>

@@ -9,6 +9,40 @@ let zoom;
 let rScale;
 let degreeMap = {};
 
+const NODE_TITLE_LINE_LENGTH = 20;
+
+function splitNodeTitle(title, maxLineLength = NODE_TITLE_LINE_LENGTH) {
+  const words = String(title || '').trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+
+  const lines = [];
+  let remaining = words;
+
+  while (remaining.length && lines.length < 2) {
+    let line = '';
+    let wordCount = 0;
+
+    for (const word of remaining) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (candidate.length > maxLineLength && line) break;
+      line = candidate;
+      wordCount += 1;
+      if (line.length >= maxLineLength) break;
+    }
+
+    lines.push(line.slice(0, maxLineLength));
+    remaining = remaining.slice(wordCount);
+  }
+
+  const wasTruncated = remaining.length > 0 || words.join(' ').length > lines.join(' ').length;
+  if (wasTruncated && lines.length) {
+    lines[lines.length - 1] =
+      `${lines[lines.length - 1].slice(0, maxLineLength - 3).trimEnd()}...`;
+  }
+
+  return lines;
+}
+
 export function getSelections() {
   return { svgSel, sceneSel, zoom, rScale, degreeMap, simulation };
 }
@@ -83,17 +117,35 @@ export function render(nodes, edges, initialAlpha = 0.8) {
     .append('g')
     .attr('class', 'node');
 
+  const isPlaceholder = (d) => Array.isArray(d.tags) && d.tags.includes('placeholder');
+
   nodeSel
     .append('circle')
     .attr('r', (d) => rScale(degreeMap[d.id] || 0))
-    .attr('fill', (d) => colorFor(d.entry_type))
-    .attr('stroke', (d) => d3.color(colorFor(d.entry_type)).brighter(1).toString());
+    .attr('fill', (d) => (isPlaceholder(d) ? 'transparent' : colorFor(d.entry_type)))
+    .attr('stroke', (d) => d3.color(colorFor(d.entry_type)).brighter(1).toString())
+    .attr('stroke-width', (d) => (isPlaceholder(d) ? 2 : 1))
+    .attr('stroke-dasharray', (d) => (isPlaceholder(d) ? '4 3' : null));
 
-  nodeSel
+  const titleSel = nodeSel
     .append('text')
-    .attr('x', (d) => rScale(degreeMap[d.id] || 0) + 4)
-    .text((d) => d.title)
-    .style('display', state.showLabels ? null : 'none');
+    .attr('class', 'node-title')
+    .attr('aria-label', (d) => d.title || '')
+    .each(function (d) {
+      const lines = splitNodeTitle(d.title);
+      const firstLineY = lines.length > 1 ? -6 : 0;
+
+      d3.select(this)
+        .selectAll('tspan')
+        .data(lines)
+        .enter()
+        .append('tspan')
+        .attr('x', 0)
+        .attr('y', (_line, index) => firstLineY + index * 12)
+        .text((line) => line);
+    });
+
+  titleSel.append('title').text((d) => d.title || '');
 
   nodeSel
     .append('text')

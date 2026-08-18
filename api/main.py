@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,23 +18,55 @@ from fastapi.responses import PlainTextResponse
 
 from api.routes import entries, graph as graph_routes, mem as mem_routes, agent as agent_routes
 from api.routes import remote as remote_routes
+from api.routes import remote_sync as remote_sync_routes
+from api.routes import retrieve as retrieve_routes
 from core.app_state import graph
 from core.storage.database import SessionLocal, init_db
+from core.version import __version__
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise the database and rebuild the in-memory graph on startup."""
     init_db()
-    with SessionLocal() as db:
-        from core.storage.repository import EdgeRepository, EntryRepository
-
-        entries_list = EntryRepository(db).get_all()
-        edges_list = EdgeRepository(db).get_all()
-    graph.rebuild_from_db(entries_list, edges_list)
-    yield
     from core import events as _events
-    _events.signal_shutdown()
+    _events.set_loop(asyncio.get_running_loop())
+    from core.sync.db_watcher import reload_graph_from_db
+
+    reload_graph_from_db(graph)
+
+    sync_task: asyncio.Task | None = None
+    if os.environ.get("KDG_REMOTE_SYNC_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+        interval = int(os.environ.get("KDG_REMOTE_SYNC_INTERVAL_SECONDS", "900"))
+        from core.sync.remote_sync import run_periodic_sync
+
+        sync_task = asyncio.create_task(run_periodic_sync(interval))
+        logger.info("remote-sync background loop started (interval=%ss)", interval)
+
+    # DB-change watcher: detects mutations written by out-of-process CLI commands
+    # (e.g. `python main.py extract …`) and refreshes the in-memory graph + SSE.
+    watcher_task: asyncio.Task | None = None
+    watch_interval = int(os.environ.get("KDG_DB_WATCH_INTERVAL_SECONDS", "3"))
+    if watch_interval > 0:
+        from core.sync.db_watcher import run_db_watcher
+
+        watcher_task = asyncio.create_task(run_db_watcher(graph, watch_interval))
+        logger.info("db-watcher started (interval=%ss)", watch_interval)
+
+    try:
+        yield
+    finally:
+        from core import events as _events
+        _events.signal_shutdown()
+        for task in (sync_task, watcher_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
 
 app = FastAPI(
@@ -40,7 +75,7 @@ app = FastAPI(
         "Agent-facing interface for a wiki-native executable knowledge graph. "
         "Search entries, traverse relations, and navigate operational knowledge."
     ),
-    version="0.1.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -56,6 +91,8 @@ app.include_router(graph_routes.router, prefix="/graph", tags=["graph"])
 app.include_router(mem_routes.router, prefix="/mem", tags=["mem"])
 app.include_router(agent_routes.router, prefix="/agent", tags=["agent"])
 app.include_router(remote_routes.router, prefix="/remote", tags=["remote"])
+app.include_router(remote_sync_routes.router, prefix="/remote-sync", tags=["remote-sync"])
+app.include_router(retrieve_routes.router, prefix="/retrieve", tags=["retrieve"])
 
 
 @app.get("/health", tags=["meta"])

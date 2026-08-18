@@ -38,11 +38,21 @@
   stroke-linejoin: round;
 }
 
+.node .node-title {
+  text-anchor: middle;
+}
+
 .edge-label {
   font-size: 9px;
   fill: var(--text-muted);
   pointer-events: none;
   font-family: 'JetBrains Mono', monospace;
+}
+
+/* Labels toggle: hides both node titles and edge relation labels. */
+body.labels-off .node text:not(.score-label),
+body.labels-off .edge-label {
+  display: none !important;
 }
 
 .node .score-label {

@@ -18,10 +18,77 @@ from typing import Any, Callable, Iterator
 
 from openai import OpenAI
 
+from core import events as _events
 from core.graph.graph import KnowDoGraph
 from agents.graph_agent.tools import TOOL_DISPATCH, TOOL_SCHEMAS
 
 _DEFAULT_MODEL = "qwen-plus"
+
+# Tool calls that mutate the graph; the frontend is notified via SSE so it
+# can refresh after each such call.
+_MUTATING_TOOLS: set[str] = {
+    "create_entry",
+    "update_entry",
+    "delete_entry",
+    "create_edge",
+    "delete_edge",
+    "merge_entries",
+    "resolve_wikilinks",
+    "remove_dangling_edges",
+    "create_script_entry",
+    "add_script_to_entry",
+    "attach_script_to_entry",
+    "add_asset_to_entry",
+    "build_material_interface_workflow",
+    "create_material_entry",
+    "submit_feedback",
+    "create_heuristic",
+    "create_constraint",
+    "decompose_capability",
+}
+
+# Read-only tools exposed when the agent is instantiated in query-only mode.
+# Mutating tools are excluded so external agents can query the graph without
+# accidentally writing nodes or edges.
+_READ_ONLY_TOOLS: set[str] = {
+    "get_entry",
+    "search_entries",
+    "list_entries",
+    "get_neighbors",
+    "graph_stats",
+    "fetch_url",
+    "web_search",
+    "find_similar_nodes",
+    "get_graph_overview",
+    "list_nodes_by_type",
+    "get_script",
+    "list_scripts",
+    "list_assets",
+    "list_by_verification",
+    "list_needs_generalization",
+    "retrieve_plan",
+    "retrieve_heuristics",
+    "retrieve_constraints",
+}
+
+_READ_ONLY_SYSTEM_PROMPT = """You are a read-only knowledge-graph query assistant for the Know-Do Graph system.
+
+Your role is to **answer questions** about the graph — searching, retrieving, and
+summarising existing entries and relationships. You do NOT add, modify, or delete
+any nodes or edges.
+
+## Search strategy
+Use ``search_entries`` or ``find_similar_nodes`` for free-text queries.
+Use ``get_entry`` to fetch full details of a specific node.
+Use ``get_neighbors`` to explore relationships.
+Use ``get_graph_overview`` to orient yourself when asked general questions.
+Use ``list_nodes_by_type`` to enumerate nodes of a given category.
+
+## Important
+- Do NOT attempt to create, update, delete, or merge any entries or edges.
+- Do NOT call any write operations; only read/query tools are available.
+- Summarise and return what exists in the graph as clearly as possible.
+"""
 
 _SYSTEM_PROMPT = """You are an expert knowledge-graph management assistant for the Know-Do Graph system.
 
@@ -77,7 +144,42 @@ overlaps an existing one — treat that as a signal to merge or rename.
 - **data** – dataset, structural file, computed result, or reference material (crystals, compounds).
 - **analytical** – analysis method or metric.
 - **memory** – operational memory trace.
+- **heuristic** – L3 conditional, empirical guidance attached to a skill (see hierarchical memory below).
+- **constraint** – L4 known failure mode or limitation attached to a skill.
 - **generic** – catch-all for entries that do not fit above.
+
+## Hierarchical memory (L1–L4) — progressive disclosure
+The graph is organised into four orthogonal levels so planners can pull only
+the level of detail they need:
+
+  - **L1 — Capability**  (`capability` / `workflow`)
+      Reusable high-level ability. Planner-friendly. Stays domain-agnostic
+      when possible. Example: "construct amorphous structures".
+  - **L2 — Procedure**  (`procedure`)
+      Executable workflow decomposition / tool sequencing. Example:
+      "initialize random structure → anneal → controlled quench → relax".
+  - **L3 — Heuristic**  (`heuristic`)
+      Operational experience: conditional, empirical guidance. NOT a universal
+      truth. Example: "cooling rate strongly affects sp2/sp3 ratio".
+  - **L4 — Constraint / Failure Mode**  (`constraint`)
+      Known limitation or failure pattern. Example: "unsuitable for
+      bond-breaking processes". Verifier-guided debugging starts here.
+
+**Critical rules**
+1. Do NOT embed heuristics or failure modes inside a capability's `content`
+   blob. Create them as separate L3 / L4 nodes via `create_heuristic` /
+   `create_constraint` so progressive retrieval can surface them on demand.
+2. Do NOT encode domain-specific details directly into L1 capability names.
+   Prefer "construct amorphous structures" over "construct amorphous carbon
+   via Tersoff melt-quench". System-specific knowledge lives in L3/L4.
+3. When you create an L2 procedure that implements an existing L1 capability,
+   wire the link with `decompose_capability(capability, procedure)`.
+4. For retrieval, prefer the staged tools:
+   - `retrieve_plan(goal)` for planning (returns L1 + L2 only).
+   - `retrieve_heuristics(skill)` once a candidate is chosen.
+   - `retrieve_constraints(skill)` when the verifier reports an issue or you
+     need to estimate execution risk.
+   This avoids polluting the planning context with the full knowledge dump.
 
 ## Verification & feedback
 Every node carries `verification_status` (unverified | self_tested |
@@ -90,6 +192,23 @@ Scripts are **capability** entries with `script_language` set in metadata.
 1. Use ``create_script_entry`` to add runnable scripts.
 2. Link scripts to procedures/capabilities via ``attach_script_to_entry``.
 3. Any entry with `script_language` set can be downloaded at ``GET /entries/{id}/download``.
+
+## Node assets (folder-style)
+Every node behaves like a small folder containing typed assets, addressable as
+`[entry]/[folder]/[filename]` and served at
+``GET /entries/{id}/assets/{folder}/{filename}``.
+
+Conventional folders (free-form names also allowed):
+- ``scripts``     — runnable code (Python/bash/…)
+- ``references``  — URLs to papers, repos, docs (use ``kind="link"``)
+- ``docs``        — markdown/text documentation (``kind="text"``)
+- ``examples``    — example input files, configs, notebooks
+- ``data``        — small datasets / structural files
+- ``notes``       — free-form annotations
+
+Use ``add_asset_to_entry`` for anything beyond a script (URL, doc, example file).
+Use ``add_script_to_entry`` for runnable scripts (auto-targets the ``scripts`` folder).
+Use ``list_assets`` to inspect a node's folder tree.
 
 ## Search strategy
 Both ``search_entries`` and ``find_similar_nodes`` support three modes:
@@ -138,15 +257,26 @@ class GraphAgent:
         graph: KnowDoGraph,
         model: str | None = None,
         on_step: Callable[[str, dict], None] | None = None,
+        read_only: bool = False,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         self._graph = graph
         self._model = model or os.environ.get("GRAPH_AGENT_MODEL", _DEFAULT_MODEL)
         self._client = OpenAI(
-            api_key=os.environ["OPENAI_API_KEY"],
-            base_url=os.environ.get("OPENAI_API_BASE"),
+            api_key=api_key or os.environ["OPENAI_API_KEY"],
+            base_url=base_url if base_url is not None else os.environ.get("OPENAI_API_BASE"),
         )
-        self._history: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        self._read_only = read_only
+        system_prompt = _READ_ONLY_SYSTEM_PROMPT if read_only else _SYSTEM_PROMPT
+        self._history: list[dict] = [{"role": "system", "content": system_prompt}]
         self._on_step = on_step
+        # Filter tool schemas to read-only set when in query-only mode
+        self._tool_schemas = (
+            [s for s in TOOL_SCHEMAS if s["function"]["name"] in _READ_ONLY_TOOLS]
+            if read_only
+            else TOOL_SCHEMAS
+        )
 
     # ------------------------------------------------------------------
     # Public interface
@@ -177,7 +307,7 @@ class GraphAgent:
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=self._history,
-                tools=TOOL_SCHEMAS,
+                tools=self._tool_schemas,
                 tool_choice="auto",
             )
             message = response.choices[0].message
@@ -215,6 +345,10 @@ class GraphAgent:
 
     def _dispatch(self, name: str, arguments_json: str) -> Any:
         """Call the named tool with the provided JSON arguments."""
+        # Guard: in read-only mode, reject any mutating tool that somehow slips through
+        if self._read_only and name in _MUTATING_TOOLS:
+            return {"error": f"Tool '{name}' is not available in read-only mode."}
+
         func = TOOL_DISPATCH.get(name)
         if func is None:
             return {"error": f"Unknown tool: {name}"}
@@ -226,6 +360,16 @@ class GraphAgent:
         # Inject the live graph instance into every call
         kwargs["graph"] = self._graph
         try:
-            return func(**kwargs)
+            result = func(**kwargs)
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
+
+        # Broadcast a refresh hint so connected frontends re-fetch the graph.
+        if name in _MUTATING_TOOLS:
+            is_error = isinstance(result, dict) and "error" in result
+            if not is_error:
+                try:
+                    _events.emit("graph_changed", {"tool": name})
+                except Exception:
+                    pass
+        return result

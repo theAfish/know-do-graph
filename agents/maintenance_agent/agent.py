@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.graph.graph import KnowDoGraph
+from core.schemas.edge import Edge, EdgeRelation
 from core.schemas.entry import Entry, EntryMetadata, EntryType, RefinementStatus
 from core.storage.database import SessionLocal
 from core.storage.repository import EdgeRepository, EntryRepository
@@ -67,10 +68,10 @@ class MaintenanceAgent:
         self,
         mem_id: str,
         session_id: str = "default",
-        entry_type: EntryType = EntryType.memory,
+        entry_type: EntryType = EntryType.generic,
         tags: Optional[list[str]] = None,
     ) -> Optional[Entry]:
-        """Promote a Mem-Graph trace into a full Know-Do Graph entry."""
+        """Distil a raw memory node into a refined graph entry."""
         from core.memory.memgraph import MemGraph
         from core.storage.repository import EntryRepository
 
@@ -93,7 +94,14 @@ class MaintenanceAgent:
 
         with SessionLocal() as db:
             saved = EntryRepository(db).create(entry)
+            edge = EdgeRepository(db).create(Edge(
+                source_id=mem_entry.id,
+                target_id=saved.id,
+                relation=EdgeRelation.refinement_of,
+                metadata={"source": "memory_promotion"},
+            ))
         self._graph.add_entry(saved)
+        self._graph.add_edge(edge)
         mg.mark_promoted(mem_id, saved.id)
         return saved
 
@@ -128,3 +136,156 @@ class MaintenanceAgent:
         with SessionLocal() as db:
             entries = EntryRepository(db).get_all()
         return [e for e in entries if e.metadata.needs_generalization][:limit]
+
+    # ------------------------------------------------------------------
+    # Hierarchical-memory maintenance
+    # ------------------------------------------------------------------
+
+    def extract_heuristics_from_node(
+        self,
+        entry_id: str,
+        dry_run: bool = True,
+    ) -> dict:
+        """Best-effort split of a flat skill blob into L3 / L4 child nodes.
+
+        Scans the body of *entry_id* for headed sections whose titles match
+        common heuristic / constraint patterns (case-insensitive substrings):
+
+        ============================ ===============
+        Heading contains             Maps to
+        ============================ ===============
+        "heuristic", "rule of thumb" L3 heuristic
+        "tips", "best practice"      L3 heuristic
+        "limitation", "failure"      L4 constraint
+        "caveat", "warning", "pitfall" L4 constraint
+        "do not use", "not suitable" L4 constraint
+        ============================ ===============
+
+        Non-destructive: the source node is not modified; child nodes are only
+        created when ``dry_run=False``. Returns a summary dict describing what
+        was (or would be) extracted.
+        """
+        import re
+
+        from core.retrieval.retrieval import RetrievalEngine
+        from core.schemas.edge import Edge, EdgeRelation
+        from core.schemas.entry import (
+            Entry,
+            EntryMetadata,
+            EntryType,
+            SkillLevel,
+        )
+
+        l3_keywords = ("heuristic", "rule of thumb", "tips", "best practice", "tip:", "guideline")
+        l4_keywords = (
+            "limitation", "failure", "caveat", "warning", "pitfall",
+            "do not use", "not suitable", "unsuitable", "instability", "known issue",
+        )
+
+        with SessionLocal() as db:
+            engine = RetrievalEngine(db, self._graph)
+            entry = engine.resolve_identifier(entry_id)
+            if entry is None:
+                return {"error": f"Entry '{entry_id}' not found."}
+
+            sections = _split_markdown_sections(entry.content)
+            heuristics: list[dict] = []
+            constraints: list[dict] = []
+            for heading, body in sections:
+                lower = heading.lower()
+                if any(k in lower for k in l4_keywords):
+                    constraints.append({"title": heading.strip(), "content": body.strip()})
+                elif any(k in lower for k in l3_keywords):
+                    heuristics.append({"title": heading.strip(), "content": body.strip()})
+
+            created_h: list[dict] = []
+            created_c: list[dict] = []
+            if not dry_run:
+                edge_repo = EdgeRepository(db)
+                repo = EntryRepository(db)
+                for item in heuristics:
+                    child = Entry(
+                        title=f"{entry.title} — {item['title']}"[:200],
+                        content=item["content"],
+                        entry_type=EntryType.heuristic,
+                        tags=list(dict.fromkeys(entry.tags + ["heuristic"])),
+                        metadata=EntryMetadata(
+                            skill_level=SkillLevel.L3,
+                            source_provenance=f"extracted_from:{entry.slug}",
+                            applicability={"parent": entry.slug},
+                        ),
+                    )
+                    saved = repo.create(child)
+                    edge = Edge(
+                        source_id=saved.id,
+                        target_id=entry.id,
+                        relation=EdgeRelation.heuristic_for,
+                    )
+                    edge_repo.create(edge)
+                    self._graph.add_entry(saved)
+                    self._graph.add_edge(edge)
+                    created_h.append({"id": saved.id, "slug": saved.slug, "title": saved.title})
+
+                for item in constraints:
+                    child = Entry(
+                        title=f"{entry.title} — {item['title']}"[:200],
+                        content=item["content"],
+                        entry_type=EntryType.constraint,
+                        tags=list(dict.fromkeys(entry.tags + ["constraint", "failure-mode"])),
+                        metadata=EntryMetadata(
+                            skill_level=SkillLevel.L4,
+                            source_provenance=f"extracted_from:{entry.slug}",
+                            applicability={"parent": entry.slug},
+                        ),
+                    )
+                    saved = repo.create(child)
+                    edge = Edge(
+                        source_id=saved.id,
+                        target_id=entry.id,
+                        relation=EdgeRelation.constraint_on,
+                    )
+                    edge_repo.create(edge)
+                    self._graph.add_entry(saved)
+                    self._graph.add_edge(edge)
+                    created_c.append({"id": saved.id, "slug": saved.slug, "title": saved.title})
+
+                # Denormalise constraint slugs on parent.
+                if created_c:
+                    entry.metadata.failure_modes = list(
+                        dict.fromkeys(
+                            entry.metadata.failure_modes + [c["slug"] for c in created_c]
+                        )
+                    )
+                    repo.update(entry)
+
+        return {
+            "entry": entry.slug,
+            "dry_run": dry_run,
+            "candidate_heuristics": heuristics,
+            "candidate_constraints": constraints,
+            "created_heuristics": created_h,
+            "created_constraints": created_c,
+        }
+
+
+def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
+    """Naive markdown splitter: returns list of (heading, body) pairs.
+
+    Recognises ``#``-style headings (any level). Text before the first heading
+    is associated with heading ``""``.
+    """
+    import re
+
+    sections: list[tuple[str, str]] = []
+    current_heading = ""
+    current_body: list[str] = []
+    for line in (text or "").splitlines():
+        m = re.match(r"^\s*#{1,6}\s+(.+?)\s*$", line)
+        if m:
+            sections.append((current_heading, "\n".join(current_body)))
+            current_heading = m.group(1)
+            current_body = []
+        else:
+            current_body.append(line)
+    sections.append((current_heading, "\n".join(current_body)))
+    return sections

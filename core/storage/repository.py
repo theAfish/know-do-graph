@@ -9,9 +9,22 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from core.schemas.edge import Edge
-from core.schemas.entry import Entry
+from core.schemas.entry import Entry, entry_type_value
 
 logger = logging.getLogger(__name__)
+
+
+def _notify(event_type: str, data: dict) -> None:
+    """Best-effort SSE broadcast on graph mutations.
+
+    Safe to call from CLI processes (no event loop → silently no-ops) and from
+    API worker threads. Never raises.
+    """
+    try:
+        from core import events as _events
+        _events.emit(event_type, data)
+    except Exception:
+        pass
 
 
 def _unique_slug(db: Session, base_slug: str, entry_id: str) -> str:
@@ -76,18 +89,23 @@ class EntryRepository:
     def create(self, entry: Entry) -> Entry:
         from core.storage.models import EntryModel
 
+        # A newly-created node always starts with no review history.
+        entry.metadata.review_count = 0
+        entry.metadata.modify_count = 0
+        entry.metadata.last_reviewed_at = None
         slug = _unique_slug(self._db, entry.slug or _slug(entry.title), entry.id)
         model = EntryModel(
             id=entry.id,
             title=entry.title,
             slug=slug,
-            entry_type=entry.entry_type.value,
+            entry_type=entry_type_value(entry.entry_type),
             content=entry.content,
             tags=json.dumps(entry.tags),
             aliases=json.dumps(entry.aliases),
             metadata_json=json.dumps(entry.metadata.model_dump(mode="json")),
             internal_refs=json.dumps(entry.internal_refs),
             scripts_json=json.dumps([s.model_dump() for s in entry.scripts]),
+            assets_json=json.dumps([a.model_dump() for a in entry.assets]),
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
@@ -96,6 +114,8 @@ class EntryRepository:
         self._db.refresh(model)
         saved = Entry(**model.to_dict())
         _refresh_embedding(self._db, saved, model)
+        if not saved.metadata.disabled:
+            _notify("node_added", {"id": saved.id, "title": saved.title, "slug": saved.slug})
         return saved
 
     def update(self, entry: Entry) -> Optional[Entry]:
@@ -104,32 +124,62 @@ class EntryRepository:
         model = self._db.get(EntryModel, entry.id)
         if not model:
             return None
+        was_disabled = bool(json.loads(model.metadata_json or "{}").get("disabled", False))
         model.title = entry.title
         model.slug = _unique_slug(self._db, entry.slug or _slug(entry.title), entry.id)
-        model.entry_type = entry.entry_type.value
+        model.entry_type = entry_type_value(entry.entry_type)
         model.content = entry.content
         model.tags = json.dumps(entry.tags)
         model.aliases = json.dumps(entry.aliases)
         model.metadata_json = json.dumps(entry.metadata.model_dump(mode="json"))
         model.internal_refs = json.dumps(entry.internal_refs)
         model.scripts_json = json.dumps([s.model_dump() for s in entry.scripts])
+        model.assets_json = json.dumps([a.model_dump() for a in entry.assets])
         model.updated_at = datetime.utcnow()
         self._db.commit()
         self._db.refresh(model)
         saved = Entry(**model.to_dict())
         _refresh_embedding(self._db, saved, model)
+        if saved.metadata.disabled:
+            _notify("node_removed", {"id": saved.id})
+        elif was_disabled:
+            _notify("node_added", {"id": saved.id, "title": saved.title, "slug": saved.slug})
+        else:
+            _notify("node_updated", {"id": saved.id, "title": saved.title, "slug": saved.slug})
         return saved
 
     def delete(self, entry_id: str) -> bool:
         from core.retrieval import vector_store
-        from core.storage.models import EntryModel
+        from core.storage.models import EdgeModel, EntryModel
 
         model = self._db.get(EntryModel, entry_id)
         if not model:
             return False
+        incident_edges = (
+            self._db.query(EdgeModel)
+            .filter(
+                (EdgeModel.source_id == entry_id)
+                | (EdgeModel.target_id == entry_id)
+            )
+            .all()
+        )
+        removed_edges = [
+            {
+                "id": edge.id,
+                "source_id": edge.source_id,
+                "target_id": edge.target_id,
+                "relation": edge.relation,
+            }
+            for edge in incident_edges
+        ]
+        for edge in incident_edges:
+            self._db.delete(edge)
         self._db.delete(model)
         self._db.commit()
         vector_store.delete(self._db, entry_id)
+        for edge in removed_edges:
+            _notify("edge_removed", edge)
+        _notify("node_removed", {"id": entry_id})
         return True
 
     def get_all(self) -> list[Entry]:
@@ -166,6 +216,12 @@ class EdgeRepository:
         )
         self._db.add(model)
         self._db.commit()
+        _notify("edge_added", {
+            "id": edge.id,
+            "source_id": edge.source_id,
+            "target_id": edge.target_id,
+            "relation": edge.relation.value,
+        })
         return edge
 
     def delete(self, edge_id: str) -> bool:
@@ -174,8 +230,10 @@ class EdgeRepository:
         model = self._db.get(EdgeModel, edge_id)
         if not model:
             return False
+        src, tgt, rel = model.source_id, model.target_id, model.relation
         self._db.delete(model)
         self._db.commit()
+        _notify("edge_removed", {"id": edge_id, "source_id": src, "target_id": tgt, "relation": rel})
         return True
 
     def get_all(self) -> list[Edge]:
@@ -185,8 +243,32 @@ class EdgeRepository:
         return [Edge(**row.to_dict()) for row in rows]
 
 
+_CHAR_SUBS: dict[str, str] = {
+    "Å": "angstrom",
+    "å": "angstrom",
+    "µ": "micro",
+    "μ": "micro",
+    "°": "deg",
+    "±": "plus-minus",
+    "×": "x",
+    "·": "-",
+}
+
+
 def _slug(title: str) -> str:
-    slug = title.lower().strip()
+    import unicodedata
+    for sym, replacement in _CHAR_SUBS.items():
+        title = title.replace(sym, f" {replacement} ")
+    parts: list[str] = []
+    for ch in unicodedata.normalize("NFKD", title):
+        if ch.isascii():
+            parts.append(ch)
+        elif unicodedata.combining(ch):
+            pass
+        else:
+            name = unicodedata.name(ch, "").lower()
+            parts.append(name.split()[-1] if name else "")
+    slug = "".join(parts).lower().strip()
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = re.sub(r"-+", "-", slug)

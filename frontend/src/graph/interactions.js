@@ -28,17 +28,22 @@ export function attachNodeInteractions(simulationGetter) {
           dragActive = true;
           d.fx = d.x;
           d.fy = d.y;
-          const sim = simulationGetter();
-          sim?.alphaTarget(0.05).restart();
         }
         d.fx = event.x;
         d.fy = event.y;
-      })
-      .on('end', (event, d) => {
+        // Re-heat only when the simulation has cooled enough that other
+        // nodes have stopped responding. Crucially, we use `alpha` (one-shot
+        // boost that decays to 0) instead of `alphaTarget` (which keeps the
+        // simulation running indefinitely while the mouse is held). This
+        // lets the graph settle even if the user pauses mid-drag without
+        // releasing the mouse.
         const sim = simulationGetter();
-        if (!event.active) sim?.alphaTarget(0);
+        if (sim && sim.alpha() < 0.1) sim.alpha(0.3).restart();
+      })
+      .on('end', (_event, d) => {
         d.fx = null;
         d.fy = null;
+        dragActive = false;
       })
   );
 

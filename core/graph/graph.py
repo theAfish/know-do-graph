@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import networkx as nx
 
 from core.schemas.edge import Edge, EdgeRelation
-from core.schemas.entry import Entry
+from core.schemas.entry import Entry, entry_type_value
+
+logger = logging.getLogger(__name__)
 
 
 class KnowDoGraph:
@@ -18,29 +21,78 @@ class KnowDoGraph:
 
     def __init__(self) -> None:
         self._g: nx.DiGraph = nx.DiGraph()
+        self._g.graph["unreviewed_nodes"] = 0
 
     # ------------------------------------------------------------------
     # Nodes
     # ------------------------------------------------------------------
 
     def add_entry(self, entry: Entry) -> None:
+        md = entry.metadata
+        # Disabled entries must not materialise in the traversal graph. Removing
+        # an existing node also removes every incident edge, making both the
+        # node and its connections invisible in graph-oriented API responses.
+        if md.disabled:
+            self.remove_entry(entry.id)
+            return
+        existed = self._g.has_node(entry.id)
+        was_unreviewed = (
+            existed and self._g.nodes[entry.id].get("review_count", 0) == 0
+        )
+        is_unreviewed = md.review_count == 0
+        if not existed and is_unreviewed:
+            self._g.graph["unreviewed_nodes"] += 1
+        elif existed and was_unreviewed != is_unreviewed:
+            self._g.graph["unreviewed_nodes"] += 1 if is_unreviewed else -1
+        timestamp = md.timestamp.isoformat() if getattr(md, "timestamp", None) else None
+        verification = (
+            md.verification_status.value
+            if hasattr(md.verification_status, "value")
+            else md.verification_status
+        )
+        # Effective hierarchical-memory level (explicit override > entry_type default).
+        from core.schemas.entry import implied_level
+
+        level_obj = implied_level(entry.entry_type, md.skill_level)
+        level_value = level_obj.value if level_obj else None
         self._g.add_node(
             entry.id,
             title=entry.title,
             slug=entry.slug,
-            entry_type=entry.entry_type.value,
+            entry_type=entry_type_value(entry.entry_type),
             tags=entry.tags,
+            timestamp=timestamp,
+            usage_count=md.usage_count,
+            trust_score=md.trust_score,
+            verification_status=verification,
+            review_count=md.review_count,
+            skill_level=level_value,
         )
 
     def remove_entry(self, entry_id: str) -> None:
         if self._g.has_node(entry_id):
+            if self._g.nodes[entry_id].get("review_count", 0) == 0:
+                self._g.graph["unreviewed_nodes"] -= 1
             self._g.remove_node(entry_id)
 
     # ------------------------------------------------------------------
     # Edges
     # ------------------------------------------------------------------
 
-    def add_edge(self, edge: Edge) -> None:
+    def add_edge(self, edge: Edge) -> bool:
+        """Add an edge to the in-memory graph.
+
+        Returns ``False`` (and logs a warning) if either endpoint is unknown,
+        instead of silently letting networkx auto-create a typeless ghost node.
+        """
+        if not self._g.has_node(edge.source_id) or not self._g.has_node(edge.target_id):
+            logger.warning(
+                "skipping edge %s → %s (%s): endpoint missing from graph",
+                edge.source_id,
+                edge.target_id,
+                edge.relation.value if hasattr(edge.relation, "value") else edge.relation,
+            )
+            return False
         self._g.add_edge(
             edge.source_id,
             edge.target_id,
@@ -48,6 +100,7 @@ class KnowDoGraph:
             relation=edge.relation.value if hasattr(edge.relation, "value") else edge.relation,
             weight=edge.weight,
         )
+        return True
 
     def remove_edge(self, source_id: str, target_id: str) -> None:
         if self._g.has_edge(source_id, target_id):
@@ -82,13 +135,23 @@ class KnowDoGraph:
             for nbr in self._g.successors(entry_id):
                 data = dict(self._g.edges[entry_id, nbr])
                 if _matches(data):
-                    neighbors.append({"id": nbr, "direction": "out", **data})
+                    neighbors.append({
+                        **data,
+                        "edge_id": data.get("id"),
+                        "id": nbr,
+                        "direction": "out",
+                    })
 
         if direction in ("in", "both"):
             for nbr in self._g.predecessors(entry_id):
                 data = dict(self._g.edges[nbr, entry_id])
                 if _matches(data):
-                    neighbors.append({"id": nbr, "direction": "in", **data})
+                    neighbors.append({
+                        **data,
+                        "edge_id": data.get("id"),
+                        "id": nbr,
+                        "direction": "in",
+                    })
 
         return neighbors
 
@@ -149,12 +212,24 @@ class KnowDoGraph:
             "nodes": self._g.number_of_nodes(),
             "edges": self._g.number_of_edges(),
             "is_dag": nx.is_directed_acyclic_graph(self._g),
+            "unreviewed_nodes": self._g.graph["unreviewed_nodes"],
         }
 
     def rebuild_from_db(self, entries: list[Entry], edges: list[Edge]) -> None:
-        """Clear and rebuild the graph from persisted entries and edges."""
+        """Clear and rebuild the graph from persisted entries and edges.
+
+        Edges whose endpoints are not present in *entries* are skipped (with a
+        warning). They survive in the database — the maintenance agent's
+        ``remove_dangling_edges`` is responsible for pruning them — but they
+        are never allowed to materialise ghost nodes in the in-memory graph.
+        """
         self._g.clear()
+        self._g.graph["unreviewed_nodes"] = 0
         for entry in entries:
             self.add_entry(entry)
+        skipped = 0
         for edge in edges:
-            self.add_edge(edge)
+            if not self.add_edge(edge):
+                skipped += 1
+        if skipped:
+            logger.warning("rebuild_from_db: skipped %d dangling edge(s)", skipped)

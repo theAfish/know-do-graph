@@ -3,13 +3,62 @@ const API_BASE = '';
 
 async function jget(path) {
   const r = await fetch(`${API_BASE}${path}`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+  if (!r.ok) throw new Error(await errorMessage(r));
+  return r.json();
+}
+
+async function errorMessage(response) {
+  let detail = response.statusText;
+  try {
+    const body = await response.json();
+    detail = body.detail || detail;
+    if (Array.isArray(detail)) {
+      detail = detail.map((item) => item.msg || String(item)).join(', ');
+    }
+  } catch {
+    // Keep the HTTP status text when the response has no JSON body.
+  }
+  return `HTTP ${response.status}: ${detail}`;
+}
+
+async function jrequest(path, options) {
+  const r = await fetch(`${API_BASE}${path}`, options);
+  if (!r.ok) throw new Error(await errorMessage(r));
+  if (r.status === 204) return null;
   return r.json();
 }
 
 export const api = {
-  getFullGraph: () => jget('/graph/full'),
+  getFullGraph: (options = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(options).forEach(([key, value]) => {
+      if (value != null) params.set(key, String(value));
+    });
+    const suffix = params.size ? `?${params}` : '';
+    return jget(`/graph/full${suffix}`);
+  },
+  searchGraph: (options = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(options).forEach(([key, value]) => {
+      if (value != null && value !== '') params.set(key, String(value));
+    });
+    return jget(`/graph/search?${params}`);
+  },
+  getGraphDataset: () => jget('/graph/dataset'),
+  getHierarchy: (nodeId, { targetLevel, maxNodes = 600 } = {}) => {
+    const params = new URLSearchParams({ max_nodes: String(maxNodes) });
+    if (targetLevel != null) params.set('target_level', String(targetLevel));
+    return jget(`/graph/hierarchy/${encodeURIComponent(nodeId)}?${params}`);
+  },
   getEntry: (id) => jget(`/entries/${id}`),
+  updateEntry: (id, entry) =>
+    jrequest(`/entries/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry),
+    }),
+  deleteEntry: (id) =>
+    jrequest(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   searchEntries: ({ q, type, limit = 200, includeScores = true }) => {
     const params = new URLSearchParams({ q, limit: String(limit) });
     if (includeScores) params.set('include_scores', 'true');
@@ -18,5 +67,19 @@ export const api = {
   },
   scriptDownloadUrl: (entryId, filename) =>
     `${API_BASE}/entries/${entryId}/scripts/${encodeURIComponent(filename)}`,
+  assetUrl: (entryId, folder, filename) =>
+    `${API_BASE}/entries/${entryId}/assets/${encodeURIComponent(folder)}/${filename
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/')}`,
+  listAssets: (entryId) => jget(`/entries/${entryId}/assets`),
+  syncRemote: async (entryId, { force = true } = {}) => {
+    const r = await fetch(
+      `${API_BASE}/remote-sync/${encodeURIComponent(entryId)}?force=${force ? 'true' : 'false'}`,
+      { method: 'POST' },
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+    return r.json();
+  },
   eventsUrl: () => `${API_BASE}/graph/events`,
 };
