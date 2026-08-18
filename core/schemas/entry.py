@@ -443,7 +443,11 @@ class Entry(BaseModel):
 
 def entry_type_value(entry_type: EntryType | str | None) -> str:
     """Return the stored/displayable type for native and custom graphs."""
-    return entry_type.value if isinstance(entry_type, EntryType) else str(entry_type or EntryType.capability.value)
+    return (
+        entry_type.value
+        if isinstance(entry_type, EntryType)
+        else str(entry_type or EntryType.capability.value)
+    )
 
 
 # Scientific symbols that should become descriptive words, not their Latin

@@ -90,7 +90,9 @@ class RetrievalEngine:
     def _matches_disabled_filter(entry: Entry, disabled: Optional[bool]) -> bool:
         return disabled is None or entry.metadata.disabled is disabled
 
-    def get_entry_by_id(self, entry_id: str, *, disabled: Optional[bool] = False) -> Optional[Entry]:
+    def get_entry_by_id(
+        self, entry_id: str, *, disabled: Optional[bool] = False
+    ) -> Optional[Entry]:
         row = self._db.get(EntryModel, entry_id)
         if row is None:
             return None
@@ -104,17 +106,23 @@ class RetrievalEngine:
         entry = Entry(**row.to_dict())
         return entry if self._matches_disabled_filter(entry, disabled) else None
 
-    def get_entry_by_alias(self, alias: str, *, disabled: Optional[bool] = False) -> Optional[Entry]:
+    def get_entry_by_alias(
+        self, alias: str, *, disabled: Optional[bool] = False
+    ) -> Optional[Entry]:
         """Return the first entry whose aliases list contains *alias* (case-insensitive)."""
         alias_lower = alias.lower()
         rows = self._db.query(EntryModel).filter(EntryModel.aliases.ilike(f"%{alias_lower}%")).all()
         for row in rows:
             entry = Entry(**row.to_dict())
-            if any(a.lower() == alias_lower for a in entry.aliases) and self._matches_disabled_filter(entry, disabled):
+            if any(
+                a.lower() == alias_lower for a in entry.aliases
+            ) and self._matches_disabled_filter(entry, disabled):
                 return entry
         return None
 
-    def resolve_identifier(self, identifier: str, *, disabled: Optional[bool] = False) -> Optional[Entry]:
+    def resolve_identifier(
+        self, identifier: str, *, disabled: Optional[bool] = False
+    ) -> Optional[Entry]:
         """Try ID → slug → alias in order and return the first match."""
         return (
             self.get_entry_by_id(identifier, disabled=disabled)
@@ -122,7 +130,9 @@ class RetrievalEngine:
             or self.get_entry_by_alias(identifier, disabled=disabled)
         )
 
-    def list_entries(self, limit: int = 50, offset: int = 0, *, disabled: Optional[bool] = False) -> list[Entry]:
+    def list_entries(
+        self, limit: int = 50, offset: int = 0, *, disabled: Optional[bool] = False
+    ) -> list[Entry]:
         entries = [Entry(**row.to_dict()) for row in self._db.query(EntryModel).all()]
         visible = [entry for entry in entries if self._matches_disabled_filter(entry, disabled)]
         return visible[offset : offset + limit]
@@ -178,7 +188,10 @@ class RetrievalEngine:
         """
         if not query:
             return [
-                (0.0, e) for e in self._filter_only(tags=tags, entry_type=entry_type, limit=limit, disabled=disabled)
+                (0.0, e)
+                for e in self._filter_only(
+                    tags=tags, entry_type=entry_type, limit=limit, disabled=disabled
+                )
             ]
 
         entries_by_id: dict[str, Entry] = {}
@@ -190,7 +203,9 @@ class RetrievalEngine:
                 query=query, tags=tags, entry_type=entry_type, limit=200, disabled=disabled
             )
             keyword_ranked = [eid for eid, _ in keyword_hits]
-            entries_by_id.update({eid: e for eid, _, e in self._with_entries(keyword_hits, disabled=disabled)})
+            entries_by_id.update(
+                {eid: e for eid, _, e in self._with_entries(keyword_hits, disabled=disabled)}
+            )
 
         # Channel B — vector ANN (skipped in keyword mode).
         vector_ranked: list[str] = []
@@ -248,7 +263,14 @@ class RetrievalEngine:
     ) -> list[Entry]:
         q = self._db.query(EntryModel)
         if entry_type:
-            q = q.filter(EntryModel.entry_type == entry_type_value(canonical_entry_type(entry_type) if entry_type_value(entry_type) in {t.value for t in EntryType} else entry_type))
+            q = q.filter(
+                EntryModel.entry_type
+                == entry_type_value(
+                    canonical_entry_type(entry_type)
+                    if entry_type_value(entry_type) in {t.value for t in EntryType}
+                    else entry_type
+                )
+            )
         rows = q.limit(500).all()
         out: list[Entry] = []
         for row in rows:
@@ -279,7 +301,14 @@ class RetrievalEngine:
         """
         q = self._db.query(EntryModel)
         if entry_type:
-            q = q.filter(EntryModel.entry_type == entry_type_value(canonical_entry_type(entry_type) if entry_type_value(entry_type) in {t.value for t in EntryType} else entry_type))
+            q = q.filter(
+                EntryModel.entry_type
+                == entry_type_value(
+                    canonical_entry_type(entry_type)
+                    if entry_type_value(entry_type) in {t.value for t in EntryType}
+                    else entry_type
+                )
+            )
 
         tokens = [t for t in query.lower().split() if len(t) > 2 and t not in _STOP_WORDS]
         if not tokens:
@@ -330,7 +359,9 @@ class RetrievalEngine:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [(eid, s) for s, eid in scored[:limit]]
 
-    def _with_entries(self, hits: list[tuple[str, int]], *, disabled: Optional[bool] = False) -> list[tuple[str, int, Entry]]:
+    def _with_entries(
+        self, hits: list[tuple[str, int]], *, disabled: Optional[bool] = False
+    ) -> list[tuple[str, int, Entry]]:
         out: list[tuple[str, int, Entry]] = []
         for eid, score in hits:
             row = self._db.get(EntryModel, eid)
@@ -353,7 +384,11 @@ class RetrievalEngine:
             .filter((EdgeModel.source_id == entry_id) | (EdgeModel.target_id == entry_id))
             .all()
         )
-        return [Edge(**row.to_dict()) for row in rows if self.get_entry_by_id(row.source_id) and self.get_entry_by_id(row.target_id)]
+        return [
+            Edge(**row.to_dict())
+            for row in rows
+            if self.get_entry_by_id(row.source_id) and self.get_entry_by_id(row.target_id)
+        ]
 
     # ------------------------------------------------------------------
     # Graph traversal

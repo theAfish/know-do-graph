@@ -84,8 +84,15 @@ def graph_stats() -> GraphStatsResponse:
     adapter = _dataset_adapter()
     if adapter:
         description = adapter.describe()
-        level = next(item for item in description["levels"] if item["level"] == description["default_level"])
-        return {"nodes": level["nodes"], "edges": level["edges"], "is_dag": False, "unreviewed_nodes": 0}
+        level = next(
+            item for item in description["levels"] if item["level"] == description["default_level"]
+        )
+        return {
+            "nodes": level["nodes"],
+            "edges": level["edges"],
+            "is_dag": False,
+            "unreviewed_nodes": 0,
+        }
     return _graph.stats()
 
 
@@ -131,7 +138,9 @@ def search_graph(request: Request) -> GraphDataResponse:
     """Search a read-only dataset without its overview sampling bound."""
     adapter = _dataset_adapter()
     if not adapter or "search" not in adapter.describe().get("capabilities", []):
-        raise HTTPException(status_code=404, detail="The current graph does not expose dataset search.")
+        raise HTTPException(
+            status_code=404, detail="The current graph does not expose dataset search."
+        )
     try:
         return adapter.search_view(dict(request.query_params))
     except ValueError as exc:
@@ -143,7 +152,9 @@ def get_hierarchy(node_id: str, request: Request) -> GraphDataResponse:
     """Return a standardized parent-to-constituent view when supported."""
     adapter = _dataset_adapter()
     if not adapter or "hierarchy" not in adapter.describe().get("capabilities", []):
-        raise HTTPException(status_code=404, detail="The current graph does not expose a hierarchy.")
+        raise HTTPException(
+            status_code=404, detail="The current graph does not expose a hierarchy."
+        )
     try:
         return adapter.hierarchy_view(node_id=node_id, options=dict(request.query_params))
     except ValueError as exc:

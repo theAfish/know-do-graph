@@ -59,8 +59,14 @@ def update_entry(
     current = resolve_required(db, graph, identifier)
     if "entry_type" in changes:
         raw_type = entry_type_value(changes["entry_type"])
-        subtype = legacy_entry_subtype(raw_type) if raw_type in {t.value for t in EntryType} else None
-        changes["entry_type"] = canonical_entry_type(raw_type) if subtype or raw_type in {t.value for t in EntryType} else raw_type
+        subtype = (
+            legacy_entry_subtype(raw_type) if raw_type in {t.value for t in EntryType} else None
+        )
+        changes["entry_type"] = (
+            canonical_entry_type(raw_type)
+            if subtype or raw_type in {t.value for t in EntryType}
+            else raw_type
+        )
         if subtype:
             metadata = (
                 _metadata(changes.get("metadata")) if "metadata" in changes else current.metadata

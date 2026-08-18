@@ -56,7 +56,9 @@ def promote(database: Path, *, dry_run: bool = False) -> tuple[int, Counter[tupl
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("database", type=Path, help="SQLite database to normalize")
-    parser.add_argument("--dry-run", action="store_true", help="Report changes without writing them")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Report changes without writing them"
+    )
     args = parser.parse_args()
 
     if not args.database.is_file():

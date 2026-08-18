@@ -117,7 +117,9 @@ class LrgDataset:
         available = {item["level"] for item in levels}
         selected_level = description["default_level"] if level is None else level
         if selected_level not in available:
-            raise ValueError(f"Unknown LRG level {selected_level}; available levels: {sorted(available)}")
+            raise ValueError(
+                f"Unknown LRG level {selected_level}; available levels: {sorted(available)}"
+            )
 
         # A force-directed SVG is useful for an overview, but not for thousands
         # of labels and links. Select the highest-connected supernodes first;
@@ -184,7 +186,9 @@ class LrgDataset:
         level = self._optional_int(options, "level")
         selected_level = description["default_level"] if level is None else level
         if selected_level not in available:
-            raise ValueError(f"Unknown LRG level {selected_level}; available levels: {sorted(available)}")
+            raise ValueError(
+                f"Unknown LRG level {selected_level}; available levels: {sorted(available)}"
+            )
 
         query = str(options.get("q") or "").strip().lower()
         if not query:
@@ -387,7 +391,9 @@ class LrgDataset:
             size = int(row.size)
             type_counts = self._json_dict(row.entry_type_counts_json)
             tags = self._json_list(row.top_tags_json)
-            title = row.member_title if size == 1 and row.member_title else f"Cluster of {size} entries"
+            title = (
+                row.member_title if size == 1 and row.member_title else f"Cluster of {size} entries"
+            )
             nodes.append(
                 {
                     "id": self._node_id(level, int(row.supernode)),

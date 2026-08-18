@@ -14,7 +14,9 @@ class LrgDatasetTests(unittest.TestCase):
         self.engine = create_engine(f"sqlite:///{Path(self.temp_dir.name) / 'lrg.db'}")
         with self.engine.begin() as conn:
             conn.execute(text("CREATE TABLE entries (id TEXT)"))
-            conn.execute(text("CREATE TABLE levels (level INTEGER, node_count INTEGER, edge_count INTEGER)"))
+            conn.execute(
+                text("CREATE TABLE levels (level INTEGER, node_count INTEGER, edge_count INTEGER)")
+            )
             conn.execute(text("CREATE TABLE metadata (key TEXT, value_json TEXT)"))
             conn.execute(
                 text(
@@ -50,7 +52,7 @@ class LrgDatasetTests(unittest.TestCase):
             )
             conn.execute(
                 text("INSERT INTO supernodes VALUES (0, 3, 1, :types, :tags)"),
-                {"types": '{"tool": 1}', "tags": '[]'},
+                {"types": '{"tool": 1}', "tags": "[]"},
             )
             conn.execute(
                 text("INSERT INTO supernode_members VALUES (0, 1, 0, 'entry-a', 'alpha', 'Alpha')")
@@ -67,13 +69,17 @@ class LrgDatasetTests(unittest.TestCase):
                 text("INSERT INTO supernodes VALUES (1, 10, 3, :types, :tags)"),
                 {"types": '{"capability": 1, "procedure": 2}', "tags": '["science", "lab"]'},
             )
-            for member_order, (entry_id, slug, title) in enumerate((
-                ("entry-a", "alpha", "Alpha"),
-                ("entry-b", "beta", "Beta"),
-                ("entry-c", "gamma", "Gamma"),
-            )):
+            for member_order, (entry_id, slug, title) in enumerate(
+                (
+                    ("entry-a", "alpha", "Alpha"),
+                    ("entry-b", "beta", "Beta"),
+                    ("entry-c", "gamma", "Gamma"),
+                )
+            ):
                 conn.execute(
-                    text("INSERT INTO supernode_members VALUES (1, 10, :order, :id, :slug, :title)"),
+                    text(
+                        "INSERT INTO supernode_members VALUES (1, 10, :order, :id, :slug, :title)"
+                    ),
                     {"order": member_order, "id": entry_id, "slug": slug, "title": title},
                 )
 
@@ -117,7 +123,13 @@ class LrgDatasetTests(unittest.TestCase):
 
         self.assertEqual(hierarchy["metadata"]["total_children"], 3)
         self.assertEqual(hierarchy["metadata"]["label"], "Resolution 1 → 0")
-        self.assertEqual({node["id"] for node in hierarchy["nodes"]}, {
-            "lrg:1:10", "lrg:0:1", "lrg:0:2", "lrg:0:3",
-        })
+        self.assertEqual(
+            {node["id"] for node in hierarchy["nodes"]},
+            {
+                "lrg:1:10",
+                "lrg:0:1",
+                "lrg:0:2",
+                "lrg:0:3",
+            },
+        )
         self.assertEqual(len(hierarchy["edges"]), 3)

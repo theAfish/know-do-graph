@@ -37,7 +37,9 @@ class CustomGraphTypeTests(unittest.TestCase):
         with engine.begin() as conn:
             conn.execute(text("CREATE TABLE entries (entry_type TEXT)"))
             conn.execute(text("INSERT INTO entries VALUES ('capability')"))
-            conn.execute(text("CREATE TABLE graph_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
+            conn.execute(
+                text("CREATE TABLE graph_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            )
             conn.execute(text("INSERT INTO graph_metadata VALUES ('graph_kind', 'custom')"))
 
         self.assertIs(detected_graph_kind(engine), GraphKind.CUSTOM)

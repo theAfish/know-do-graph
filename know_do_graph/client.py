@@ -109,9 +109,7 @@ class KnowDoGraph:
         with self._session() as db:
             return RetrievalEngine(db, self._graph).resolve_identifier(identifier)
 
-    def list(
-        self, *, limit: int = 50, offset: int = 0, disabled: bool = False
-    ) -> list[Entry]:
+    def list(self, *, limit: int = 50, offset: int = 0, disabled: bool = False) -> list[Entry]:
         """List enabled entries, or set ``disabled=True`` to list archived ones."""
         with self._session() as db:
             return RetrievalEngine(db, self._graph).list_entries(

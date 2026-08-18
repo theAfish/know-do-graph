@@ -66,7 +66,10 @@ class PublicApiTests(unittest.TestCase):
         self.assertTrue(changed.metadata.disabled)
         self.assertIsNone(self.graph.get(hidden.id))
         self.assertEqual(self.graph.search("Sensitive", mode="keyword"), [])
-        self.assertEqual([e.id for e in self.graph.search("Sensitive", mode="keyword", disabled=True)], [hidden.id])
+        self.assertEqual(
+            [e.id for e in self.graph.search("Sensitive", mode="keyword", disabled=True)],
+            [hidden.id],
+        )
         self.assertEqual([e.id for e in self.graph.list_disabled()], [hidden.id])
         self.assertEqual(self.graph.related(visible.id), [])
         self.assertEqual(self.graph.stats()["nodes"], 1)

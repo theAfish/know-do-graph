@@ -62,6 +62,9 @@ packages = ["agents", "api", "core", "examples", "know_do_graph"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Hatchling's VCS build hook rewrites this generated file during editable
+# installs, after source formatting has already run.
+extend-exclude = ["core/_version.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
