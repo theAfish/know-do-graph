@@ -57,6 +57,26 @@ class PublicApiTests(unittest.TestCase):
         self.assertTrue(self.graph.delete(procedure.slug))
         self.assertIsNone(self.graph.get(procedure.id))
 
+    def test_disabled_entries_and_their_edges_are_hidden_by_default(self) -> None:
+        visible = self.graph.add("Visible node", content="A visible record")
+        hidden = self.graph.add("Hidden node", content="Sensitive hidden record")
+        self.graph.connect(visible.id, hidden.id, relation=EdgeRelation.related_workflow)
+
+        changed = self.graph.set_disabled(hidden.id, True)
+        self.assertTrue(changed.metadata.disabled)
+        self.assertIsNone(self.graph.get(hidden.id))
+        self.assertEqual(self.graph.search("Sensitive", mode="keyword"), [])
+        self.assertEqual([e.id for e in self.graph.search("Sensitive", mode="keyword", disabled=True)], [hidden.id])
+        self.assertEqual([e.id for e in self.graph.list_disabled()], [hidden.id])
+        self.assertEqual(self.graph.related(visible.id), [])
+        self.assertEqual(self.graph.stats()["nodes"], 1)
+        self.assertEqual(self.graph.stats()["edges"], 0)
+
+        restored = self.graph.set_disabled(hidden.id, False)
+        self.assertFalse(restored.metadata.disabled)
+        self.assertEqual(self.graph.get(hidden.id).id, hidden.id)
+        self.assertEqual([e.id for e in self.graph.related(visible.id)], [hidden.id])
+
     def test_progressive_retrieval_and_memory(self) -> None:
         capability = self.graph.add(
             "Generate Interface",

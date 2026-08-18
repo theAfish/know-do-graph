@@ -120,6 +120,9 @@ class VerificationStatus(str, Enum):
 
 
 class EntryMetadata(BaseModel):
+    # Disabled entries are retained in storage but are intentionally omitted
+    # from normal lookups, retrieval, and graph traversal.
+    disabled: bool = False
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source_provenance: Optional[str] = None
     extraction_method: Optional[str] = None

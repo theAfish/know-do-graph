@@ -114,7 +114,8 @@ class EntryRepository:
         self._db.refresh(model)
         saved = Entry(**model.to_dict())
         _refresh_embedding(self._db, saved, model)
-        _notify("node_added", {"id": saved.id, "title": saved.title, "slug": saved.slug})
+        if not saved.metadata.disabled:
+            _notify("node_added", {"id": saved.id, "title": saved.title, "slug": saved.slug})
         return saved
 
     def update(self, entry: Entry) -> Optional[Entry]:
@@ -123,6 +124,7 @@ class EntryRepository:
         model = self._db.get(EntryModel, entry.id)
         if not model:
             return None
+        was_disabled = bool(json.loads(model.metadata_json or "{}").get("disabled", False))
         model.title = entry.title
         model.slug = _unique_slug(self._db, entry.slug or _slug(entry.title), entry.id)
         model.entry_type = entry_type_value(entry.entry_type)
@@ -138,7 +140,12 @@ class EntryRepository:
         self._db.refresh(model)
         saved = Entry(**model.to_dict())
         _refresh_embedding(self._db, saved, model)
-        _notify("node_updated", {"id": saved.id, "title": saved.title, "slug": saved.slug})
+        if saved.metadata.disabled:
+            _notify("node_removed", {"id": saved.id})
+        elif was_disabled:
+            _notify("node_added", {"id": saved.id, "title": saved.title, "slug": saved.slug})
+        else:
+            _notify("node_updated", {"id": saved.id, "title": saved.title, "slug": saved.slug})
         return saved
 
     def delete(self, entry_id: str) -> bool:

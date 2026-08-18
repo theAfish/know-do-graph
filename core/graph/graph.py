@@ -29,6 +29,12 @@ class KnowDoGraph:
 
     def add_entry(self, entry: Entry) -> None:
         md = entry.metadata
+        # Disabled entries must not materialise in the traversal graph. Removing
+        # an existing node also removes every incident edge, making both the
+        # node and its connections invisible in graph-oriented API responses.
+        if md.disabled:
+            self.remove_entry(entry.id)
+            return
         existed = self._g.has_node(entry.id)
         was_unreviewed = (
             existed and self._g.nodes[entry.id].get("review_count", 0) == 0

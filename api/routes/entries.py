@@ -31,10 +31,14 @@ def _engine(db: Session = Depends(get_db)) -> RetrievalEngine:
 def list_entries(
     limit: int = 20,
     offset: int = 0,
+    disabled: bool = False,
     engine: RetrievalEngine = Depends(_engine),
 ):
-    """List entries with pagination."""
-    return [e.model_dump(mode="json") for e in engine.list_entries(limit=limit, offset=offset)]
+    """List enabled entries, or pass ``disabled=true`` to list hidden ones."""
+    return [
+        e.model_dump(mode="json")
+        for e in engine.list_entries(limit=limit, offset=offset, disabled=disabled)
+    ]
 
 
 @router.get("/search", response_model=list[dict])
@@ -44,6 +48,7 @@ def search_entries(
     entry_type: Optional[str] = None,
     limit: int = 20,
     include_scores: bool = False,
+    disabled: bool = False,
     engine: RetrievalEngine = Depends(_engine),
 ):
     """Full-text + vector hybrid search.
@@ -54,10 +59,16 @@ def search_entries(
     tag_list = [t.strip() for t in tags.split(",")] if tags else None
     if include_scores and q:
         results = engine.search_entries_scored(
-            query=q, tags=tag_list, entry_type=entry_type, limit=limit
+            query=q,
+            tags=tag_list,
+            entry_type=entry_type,
+            limit=limit,
+            disabled=disabled,
         )
         return [{**e.model_dump(mode="json"), "_score": round(score, 4)} for e, score in results]
-    results = engine.search_entries(query=q, tags=tag_list, entry_type=entry_type, limit=limit)
+    results = engine.search_entries(
+        query=q, tags=tag_list, entry_type=entry_type, limit=limit, disabled=disabled
+    )
     return [e.model_dump(mode="json") for e in results]
 
 
@@ -70,24 +81,64 @@ def get_entry(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     return entry.model_dump(mode="json")
 
 
+class DisabledBody(BaseModel):
+    disabled: bool
+
+
+@router.put("/{entry_id}/disabled", response_model=dict)
+def set_entry_disabled(
+    entry_id: str, body: DisabledBody, db: Session = Depends(get_db)
+):
+    """Hide or restore an entry while retaining it and its edges in storage.
+
+    Disabled nodes are otherwise invisible to normal entry, search, and graph
+    endpoints. Use ``GET /entries/search?disabled=true`` to audit them.
+    """
+    engine = RetrievalEngine(db, _graph)
+    entry = engine.resolve_identifier(entry_id, disabled=None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    entry.metadata.disabled = body.disabled
+    updated = EntryRepository(db).update(entry)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    _graph.add_entry(updated)
+    if not body.disabled:
+        # Reintroduce persisted incident edges now that both endpoints may be visible.
+        entries = EntryRepository(db).get_all()
+        edges = EdgeRepository(db).get_all()
+        _graph.rebuild_from_db(entries, edges)
+    return {"id": updated.id, "disabled": updated.metadata.disabled}
+
+
 @router.post("/", response_model=dict, status_code=201)
 def create_entry(entry: Entry, db: Session = Depends(get_db)):
     """Create a new entry."""
     saved = EntryRepository(db).create(entry)
     _graph.add_entry(saved)
-    _events.emit("node_added", {
-        "id": saved.id,
-        "title": saved.title,
-        "slug": saved.slug,
-        "entry_type": entry_type_value(saved.entry_type),
-        "tags": saved.tags,
-    })
+    if not saved.metadata.disabled:
+        _events.emit("node_added", {
+            "id": saved.id,
+            "title": saved.title,
+            "slug": saved.slug,
+            "entry_type": entry_type_value(saved.entry_type),
+            "tags": saved.tags,
+        })
+    else:
+        # A disabled node is only inspectable through an explicit
+        # ``disabled=true`` administration query.
+        return {"id": saved.id, "disabled": True}
     return saved.model_dump(mode="json")
 
 
 @router.put("/{entry_id}", response_model=dict)
 def update_entry(entry_id: str, entry: Entry, db: Session = Depends(get_db)):
     """Update an existing entry."""
+    existing = RetrievalEngine(db, _graph).get_entry_by_id(entry_id, disabled=None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if existing.metadata.disabled:
+        raise HTTPException(status_code=404, detail="Entry not found")
     entry.id = entry_id
     entry.refresh_refs()
     entry._sync_scripts_and_assets()
@@ -95,6 +146,9 @@ def update_entry(entry_id: str, entry: Entry, db: Session = Depends(get_db)):
     if not updated:
         raise HTTPException(status_code=404, detail="Entry not found")
     _graph.add_entry(updated)
+    if updated.metadata.disabled:
+        _events.emit("node_removed", {"id": updated.id})
+        return {"id": updated.id, "disabled": True}
     _events.emit("node_updated", {
         "id": updated.id,
         "title": updated.title,

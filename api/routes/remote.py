@@ -329,15 +329,24 @@ def remote_search(
     tags: Optional[str] = None,
     entry_type: Optional[str] = None,
     limit: int = 20,
+    disabled: bool = False,
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """Full-text search with optional tag and entry-type filters.
 
     ``tags`` accepts a comma-separated list, e.g. ``tags=python,simulation``.
+    Pass ``disabled=true`` to audit hidden entries; normal searches exclude
+    them entirely.
     """
     engine = RetrievalEngine(db, _graph)
     tag_list = [t.strip() for t in tags.split(",")] if tags else None
-    results = engine.search_entries(query=q, tags=tag_list, entry_type=entry_type, limit=limit)
+    results = engine.search_entries(
+        query=q,
+        tags=tag_list,
+        entry_type=entry_type,
+        limit=limit,
+        disabled=disabled,
+    )
     return [_summarize_entry(e) for e in results]
 
 

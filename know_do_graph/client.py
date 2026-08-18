@@ -107,9 +107,14 @@ class KnowDoGraph:
         with self._session() as db:
             return RetrievalEngine(db, self._graph).resolve_identifier(identifier)
 
-    def list(self, *, limit: int = 50, offset: int = 0) -> list[Entry]:
+    def list(
+        self, *, limit: int = 50, offset: int = 0, disabled: bool = False
+    ) -> list[Entry]:
+        """List enabled entries, or set ``disabled=True`` to list archived ones."""
         with self._session() as db:
-            return RetrievalEngine(db, self._graph).list_entries(limit=limit, offset=offset)
+            return RetrievalEngine(db, self._graph).list_entries(
+                limit=limit, offset=offset, disabled=disabled
+            )
 
     def search(
         self,
@@ -120,6 +125,7 @@ class KnowDoGraph:
         limit: int = 20,
         mode: str = "hybrid",
         scores: bool = False,
+        disabled: bool = False,
     ) -> list[Entry] | list[tuple[Entry, float]]:
         """Search entries using keyword, semantic, or hybrid retrieval."""
         normalized_type = EntryType(entry_type) if entry_type is not None else None
@@ -131,10 +137,33 @@ class KnowDoGraph:
                 "entry_type": normalized_type,
                 "limit": limit,
                 "mode": mode,
+                "disabled": disabled,
             }
             if scores:
                 return retrieval.search_entries_scored(**kwargs)
             return retrieval.search_entries(**kwargs)
+
+    def set_disabled(self, identifier: str, disabled: bool) -> Entry:
+        """Hide or restore an entry without deleting its stored data or edges."""
+        with self._session() as db:
+            engine = RetrievalEngine(db, self._graph)
+            current = engine.resolve_identifier(identifier, disabled=None)
+            if current is None:
+                raise KeyError(f"Entry not found: {identifier}")
+            current.metadata.disabled = disabled
+            saved = EntryRepository(db).update(current)
+        if saved is None:
+            raise KeyError(f"Entry not found: {identifier}")
+        self._graph.add_entry(saved)
+        if not disabled:
+            # Incident edges are persisted, but were removed from the in-memory
+            # graph while disabled; reload them when restoring the node.
+            self.refresh()
+        return saved
+
+    def list_disabled(self, *, limit: int = 50, offset: int = 0) -> list[Entry]:
+        """Convenience alias for listing entries hidden by ``set_disabled``."""
+        return self.list(limit=limit, offset=offset, disabled=True)
 
     def update(self, identifier: str, **changes: Any) -> Entry:
         """Update selected fields on an existing entry."""
