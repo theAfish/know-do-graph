@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 from starlette.types import Receive, Scope, Send
 
 from api.schemas import (
@@ -17,7 +18,7 @@ from core.app_state import graph as _graph
 from core.graph.datasets import get_dataset_adapter
 from core.graph.kinds import GraphKind, detected_graph_kind
 from core.schemas.entry import EntryType
-from core.storage.database import engine
+from core.storage.database import engine, get_db
 from core.storage.models import EntryModel
 
 router = APIRouter()
@@ -162,7 +163,7 @@ def get_hierarchy(node_id: str, request: Request) -> GraphDataResponse:
 
 
 @router.post("/reload", response_model=GraphReloadResponse)
-def reload_graph() -> GraphReloadResponse:
+def reload_graph(db: Session = Depends(get_db)) -> GraphReloadResponse:
     """Rebuild the in-memory graph from the DB and broadcast a refresh event.
 
     Useful after out-of-process writes (CLI extract, db merge, manual sqlite
@@ -171,7 +172,7 @@ def reload_graph() -> GraphReloadResponse:
     from core import events as _events
     from core.sync.db_watcher import reload_graph_from_db
 
-    nodes, edges = reload_graph_from_db(_graph)
+    nodes, edges = reload_graph_from_db(_graph, db)
     _events.emit("graph_changed", {"source": "reload_endpoint", "nodes": nodes, "edges": edges})
     return {"reloaded": True, "nodes": nodes, "edges": edges}
 

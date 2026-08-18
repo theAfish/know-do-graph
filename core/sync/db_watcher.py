@@ -14,6 +14,7 @@ import asyncio
 import logging
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from core import events as _events
 from core.storage.database import SessionLocal
@@ -30,7 +31,7 @@ def _fingerprint(db) -> tuple:
     return (int(e_count), str(e_max), int(ed_count), str(ed_max))
 
 
-def reload_graph_from_db(graph) -> tuple[int, int]:
+def reload_graph_from_db(graph, db: Session | None = None) -> tuple[int, int]:
     """Rebuild *graph* from the current DB contents. Returns (node_count, edge_count).
 
     Also opportunistically deletes any dangling edges (edges whose source or
@@ -39,20 +40,25 @@ def reload_graph_from_db(graph) -> tuple[int, int]:
     """
     from core.storage.repository import EdgeRepository, EntryRepository
 
-    with SessionLocal() as db:
-        entry_repo = EntryRepository(db)
-        edge_repo = EdgeRepository(db)
-        entries = entry_repo.get_all()
-        entry_ids = {e.id for e in entries}
-        all_edges = edge_repo.get_all()
-        dangling = [
-            e for e in all_edges if e.source_id not in entry_ids or e.target_id not in entry_ids
-        ]
-        if dangling:
-            for e in dangling:
-                edge_repo.delete(e.id)
-            logger.warning("reload_graph_from_db: pruned %d dangling edge(s)", len(dangling))
-        edges = [e for e in all_edges if e.source_id in entry_ids and e.target_id in entry_ids]
+    if db is None:
+        with SessionLocal() as local_db:
+            return reload_graph_from_db(graph, local_db)
+
+    entry_repo = EntryRepository(db)
+    edge_repo = EdgeRepository(db)
+    entries = entry_repo.get_all()
+    entry_ids = {e.id for e in entries}
+    all_edges = edge_repo.get_all()
+    dangling = [
+        edge for edge in all_edges if edge.source_id not in entry_ids or edge.target_id not in entry_ids
+    ]
+    if dangling:
+        for edge in dangling:
+            edge_repo.delete(edge.id)
+        logger.warning("reload_graph_from_db: pruned %d dangling edge(s)", len(dangling))
+    edges = [
+        edge for edge in all_edges if edge.source_id in entry_ids and edge.target_id in entry_ids
+    ]
     graph.rebuild_from_db(entries, edges)
     return (len(entries), len(edges))
 
