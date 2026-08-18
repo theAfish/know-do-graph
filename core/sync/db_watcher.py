@@ -50,7 +50,9 @@ def reload_graph_from_db(graph, db: Session | None = None) -> tuple[int, int]:
     entry_ids = {e.id for e in entries}
     all_edges = edge_repo.get_all()
     dangling = [
-        edge for edge in all_edges if edge.source_id not in entry_ids or edge.target_id not in entry_ids
+        edge
+        for edge in all_edges
+        if edge.source_id not in entry_ids or edge.target_id not in entry_ids
     ]
     if dangling:
         for edge in dangling:
