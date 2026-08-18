@@ -72,6 +72,14 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
     # Filter by entry type  (capability | procedure | workflow | tool | ...):
     curl "http://{host}/remote/search?entry_type=procedure"
 
+    # Administrative audit: disabled nodes are hidden by default.
+    curl "http://{host}/remote/search?q=relaxation&disabled=true"
+
+    # Hide or restore a node; its content and edges stay stored.
+    curl -X PUT http://{host}/entries/<id-or-slug>/disabled \
+         -H "Content-Type: application/json" \
+         -d '{{"disabled": true}}'
+
     # Get a specific entry by ID, slug, or alias:
     curl "http://{host}/remote/entry/<id-or-slug>"
 
@@ -158,6 +166,7 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
     GET  /remote/entry/{{id}}/constraints — Attached L4 constraints (limits); scoped search, supports q/tags/limit
     POST /remote/feedback            — Free-form trace; optionally also updates an entry
     POST /entries/{{id}}/feedback      — Direct verification feedback on a node
+    PUT  /entries/{{id}}/disabled      — Hide or restore a node (body: {{"disabled": true|false}})
     GET  /entries/{{id}}/download      — Download a script entry's source code
     DELETE /remote/session/{{id}}      — Clear a session's chat history
 
@@ -198,6 +207,7 @@ _INSTRUCTIONS_TEMPLATE = textwrap.dedent(
       entry_type — one of: capability, procedure, workflow, tool, repository,
                    environment, dependency, data, analytical, memory, generic
       limit      — max results (default 20)
+      disabled   — `true` to search only disabled nodes; omitted/false excludes them
 
       Search returns a compact summary per entry — id, title, slug,
       entry_type, tags, aliases, and a short content snippet. Use

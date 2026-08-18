@@ -138,6 +138,42 @@ retrieval as `GET /remote/entry/{id}`, `/heuristics`, and `/constraints`.
 Each client owns its database engine, so multiple graph databases can be used
 safely in the same process.
 
+### Disabled nodes
+
+Set `metadata.disabled` when creating a node, or use `set_disabled()` to hide
+an existing node without deleting its stored content or edges. Disabled nodes
+are excluded from ordinary `get`, `list`, `search`, traversal, and graph-view
+results. Their edges remain stored and become visible again when the node is
+re-enabled.
+
+```python
+# Hide a node and all of its incident edges from normal retrieval.
+graph.set_disabled(skill.id, True)
+assert graph.get(skill.id) is None
+assert graph.search("atomic structure") == []
+
+# Administrative audit: explicitly query only disabled nodes.
+disabled_nodes = graph.list_disabled()
+disabled_hits = graph.search("atomic structure", disabled=True)
+
+# Restore the node and its persisted graph connections.
+graph.set_disabled(skill.id, False)
+```
+
+The REST equivalent is:
+
+```bash
+# Disable or restore by ID, slug, or alias.
+curl -X PUT http://127.0.0.1:8000/entries/<id-or-slug>/disabled \
+  -H "Content-Type: application/json" \
+  -d '{"disabled": true}'
+
+# Explicitly list/search disabled nodes. Normal requests exclude them.
+curl "http://127.0.0.1:8000/entries/?disabled=true"
+curl "http://127.0.0.1:8000/entries/search?q=structure&disabled=true"
+curl "http://127.0.0.1:8000/remote/search?q=structure&disabled=true"
+```
+
 ### Python chat API
 
 Configure an OpenAI or OpenAI-compatible provider:
@@ -488,11 +524,14 @@ Interactive docs at `http://127.0.0.1:8000/docs` once the server is running.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/entries/` | List entries (paginated) |
-| `GET` | `/entries/search?q=...&tags=...&entry_type=...` | Full-text search |
+| `GET` | `/entries/` | List enabled entries (paginated) |
+| `GET` | `/entries/?disabled=true` | List disabled entries; normal lists exclude them |
+| `GET` | `/entries/search?q=...&tags=...&entry_type=...` | Full-text search over enabled entries |
+| `GET` | `/entries/search?q=...&tags=...&entry_type=...&disabled=true` | Full-text search; pass `disabled=true` to audit disabled nodes |
 | `GET` | `/entries/{id}` | Get entry by ID or slug |
 | `POST` | `/entries/` | Create entry |
 | `PUT` | `/entries/{id}` | Update entry |
+| `PUT` | `/entries/{id}/disabled` | Set `{"disabled": true|false}` without deleting the node |
 | `DELETE` | `/entries/{id}` | Delete entry |
 | `GET` | `/entries/{id}/related?depth=1&relation=...` | Traverse related entries |
 | `GET` | `/entries/{id}/edges` | All edges incident to an entry |
@@ -631,7 +670,7 @@ curl http://<host>:<port>/remote
 | `GET` | `/` | Instruction sheet (plain text) |
 | `GET` | `/remote` | Same instruction sheet |
 | `POST` | `/remote/chat` | Chat with the orchestrator agent (read-only; agents and humans) |
-| `GET` | `/remote/search` | Search entries (`?q=&tags=&entry_type=&limit=`) |
+| `GET` | `/remote/search` | Search entries (`?q=&tags=&entry_type=&limit=&disabled=`) |
 | `GET` | `/remote/graph` | Graph stats + full node/edge dump |
 | `GET` | `/remote/entry/{id}` | Entry by ID, slug, or alias, including attached L3/L4 counts |
 | `GET` | `/remote/entry/{id}/heuristics` | Query-filtered L3 heuristics attached to one entry |
@@ -686,6 +725,9 @@ curl "http://<host>:<port>/remote/search?entry_type=tool"
 
 # Combined: text + tags
 curl "http://<host>:<port>/remote/search?q=ase&tags=python,simulation"
+
+# Administrative audit: disabled nodes are excluded by default
+curl "http://<host>:<port>/remote/search?q=ase&disabled=true"
 ```
 
 ### Feedback / observations
