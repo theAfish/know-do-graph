@@ -10,7 +10,13 @@ from core.retrieval import vector_store
 from core.retrieval.embedder import build_embedding_text, get_default_embedder
 from core.retrieval.fusion import reciprocal_rank_fusion, trust_multiplier, usage_bump
 from core.schemas.edge import Edge, EdgeRelation
-from core.schemas.entry import Entry, EntryType, canonical_entry_type, entry_type_value, legacy_entry_subtype
+from core.schemas.entry import (
+    Entry,
+    EntryType,
+    canonical_entry_type,
+    entry_type_value,
+    legacy_entry_subtype,
+)
 from core.storage.models import EdgeModel, EntryModel
 
 _STOP_WORDS = {

@@ -4,6 +4,7 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from starlette.types import Receive, Scope, Send
 
 from api.schemas import (
@@ -18,7 +19,6 @@ from core.graph.kinds import GraphKind, detected_graph_kind
 from core.schemas.entry import EntryType
 from core.storage.database import engine
 from core.storage.models import EntryModel
-from sqlalchemy import select
 
 router = APIRouter()
 

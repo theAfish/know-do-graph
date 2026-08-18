@@ -22,7 +22,6 @@ from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
 from core.schemas.entry import (
     Entry,
-    EntryType,
     NodeAsset,
 )
 from core.services import assets as asset_service

@@ -15,6 +15,7 @@ from sqlalchemy.engine import Engine
 
 from core.schemas.entry import EntryType
 
+
 class GraphKind(str, Enum):
     KNOW_DO_GRAPH = "know_do_graph"
     CUSTOM = "custom"
