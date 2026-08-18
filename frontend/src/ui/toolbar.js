@@ -1,6 +1,7 @@
 import { ENTRY_TYPES, COLOR_MODES } from '../constants.js';
 import { state, on, emit, EVENTS } from '../state.js';
 import { resetView } from '../graph/render.js';
+import { byId } from '../dom.js';
 
 export function initToolbar() {
   populateTypeFilter();
@@ -10,68 +11,20 @@ export function initToolbar() {
   applyLabelVisibility();
 }
 
-export function configureDataset(dataset, onChange) {
-  const controls = document.getElementById('dataset-controls');
-  const definitions = dataset?.controls || [];
-  if (!controls) return;
-  populateTypeFilter(dataset?.entry_types || ENTRY_TYPES);
-  populateColorMode(dataset?.color_modes);
-  if (typeof dataset?.presentation?.show_labels === 'boolean') {
-    state.showLabels = dataset.presentation.show_labels;
-    syncLabelBtn(document.getElementById('toggle-labels'));
-    applyLabelVisibility();
-  }
-  controls.hidden = definitions.length === 0;
-  controls.innerHTML = '';
-  if (!definitions.length) return;
-
-  const fields = [];
-  for (const definition of definitions) {
-    if (definition.type !== 'select' || !definition.parameter) continue;
-    const label = document.createElement('label');
-    label.textContent = `${definition.label || definition.parameter}:`;
-    const select = document.createElement('select');
-    select.setAttribute('aria-label', definition.label || definition.parameter);
-    for (const optionDefinition of definition.options || []) {
-      const option = document.createElement('option');
-      option.value = String(optionDefinition.value);
-      option.textContent = optionDefinition.label || String(optionDefinition.value);
-      option.selected = optionDefinition.value === dataset.graph_defaults?.[definition.parameter];
-      select.appendChild(option);
-    }
-    label.appendChild(select);
-    controls.appendChild(label);
-    fields.push({ parameter: definition.parameter, select });
-  }
-
-  const currentOptions = () => Object.fromEntries(fields.map(({ parameter, select }) => {
-    const value = select.value;
-    return [parameter, /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : value];
-  }));
-  fields.forEach(({ select }) => { select.onchange = () => onChange(currentOptions()); });
-}
-
-function populateTypeFilter(types = ENTRY_TYPES) {
-  const sel = document.getElementById('type-filter');
-  if (!sel) return;
-  const selected = sel.value;
-  sel.innerHTML = '<option value="">All types</option>';
-  for (const t of types) {
+function populateTypeFilter() {
+  const sel = byId('type-filter', HTMLSelectElement);
+  for (const t of ENTRY_TYPES) {
     const opt = document.createElement('option');
     opt.value = t;
     opt.textContent = t;
     sel.appendChild(opt);
   }
-  if ([...types].includes(selected)) sel.value = selected;
 }
 
-function populateColorMode(allowedModes = null) {
-  const sel = document.getElementById('color-mode');
-  if (!sel) return;
-  const modes = allowedModes ? COLOR_MODES.filter((mode) => allowedModes.includes(mode.value)) : COLOR_MODES;
-  if (!modes.some((mode) => mode.value === state.colorMode)) state.colorMode = 'type';
+function populateColorMode() {
+  const sel = byId('color-mode', HTMLSelectElement);
   sel.innerHTML = '';
-  for (const m of modes) {
+  for (const m of COLOR_MODES) {
     const opt = document.createElement('option');
     opt.value = m.value;
     opt.textContent = m.label;
@@ -81,27 +34,27 @@ function populateColorMode(allowedModes = null) {
 }
 
 function bindButtons() {
-  const labelsBtn = document.getElementById('toggle-labels');
-  const colorSel = document.getElementById('color-mode');
-  const resetBtn = document.getElementById('reset-view');
+  const labelsBtn = byId('toggle-labels', HTMLButtonElement);
+  const colorSel = byId('color-mode', HTMLSelectElement);
+  const resetBtn = byId('reset-view', HTMLButtonElement);
 
   syncLabelBtn(labelsBtn);
 
-  labelsBtn?.addEventListener('click', () => {
+  labelsBtn.addEventListener('click', () => {
     state.showLabels = !state.showLabels;
     syncLabelBtn(labelsBtn);
     applyLabelVisibility();
     emit(EVENTS.LABELS_CHANGED, state.showLabels);
   });
 
-  colorSel?.addEventListener('change', (e) => {
+  colorSel.addEventListener('change', (e) => {
     state.colorMode = e.target.value || 'type';
     emit(EVENTS.COLOR_MODE_CHANGED, state.colorMode);
     // Kept for backward compat with any external listeners.
     emit(EVENTS.SCORE_MODE_CHANGED, state.colorMode);
   });
 
-  resetBtn?.addEventListener('click', () => resetView());
+  resetBtn.addEventListener('click', () => resetView());
 }
 
 function applyLabelVisibility() {
@@ -112,14 +65,12 @@ function applyLabelVisibility() {
 }
 
 function syncLabelBtn(btn) {
-  if (!btn) return;
   btn.textContent = `Labels: ${state.showLabels ? 'on' : 'off'}`;
   btn.classList.toggle('active', state.showLabels);
 }
 
 function bindSSEStatus() {
-  const badge = document.getElementById('live-badge');
-  if (!badge) return;
+  const badge = byId('live-badge');
   const map = {
     connected: { cls: 'badge connected', text: '● live' },
     updating: { cls: 'badge updating', text: '↻ updating…' },

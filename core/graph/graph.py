@@ -36,9 +36,7 @@ class KnowDoGraph:
             self.remove_entry(entry.id)
             return
         existed = self._g.has_node(entry.id)
-        was_unreviewed = (
-            existed and self._g.nodes[entry.id].get("review_count", 0) == 0
-        )
+        was_unreviewed = existed and self._g.nodes[entry.id].get("review_count", 0) == 0
         is_unreviewed = md.review_count == 0
         if not existed and is_unreviewed:
             self._g.graph["unreviewed_nodes"] += 1
@@ -135,23 +133,27 @@ class KnowDoGraph:
             for nbr in self._g.successors(entry_id):
                 data = dict(self._g.edges[entry_id, nbr])
                 if _matches(data):
-                    neighbors.append({
-                        **data,
-                        "edge_id": data.get("id"),
-                        "id": nbr,
-                        "direction": "out",
-                    })
+                    neighbors.append(
+                        {
+                            **data,
+                            "edge_id": data.get("id"),
+                            "id": nbr,
+                            "direction": "out",
+                        }
+                    )
 
         if direction in ("in", "both"):
             for nbr in self._g.predecessors(entry_id):
                 data = dict(self._g.edges[nbr, entry_id])
                 if _matches(data):
-                    neighbors.append({
-                        **data,
-                        "edge_id": data.get("id"),
-                        "id": nbr,
-                        "direction": "in",
-                    })
+                    neighbors.append(
+                        {
+                            **data,
+                            "edge_id": data.get("id"),
+                            "id": nbr,
+                            "direction": "in",
+                        }
+                    )
 
         return neighbors
 
@@ -182,6 +184,16 @@ class KnowDoGraph:
     def has_node(self, entry_id: str) -> bool:
         return self._g.has_node(entry_id)
 
+    def degree(self, entry_id: str) -> int:
+        """Return total in/out degree for an entry, or 0 when absent."""
+        if not self._g.has_node(entry_id):
+            return 0
+        return int(self._g.degree(entry_id))
+
+    def degree_map(self) -> dict[str, int]:
+        """Return total in/out degree for all nodes."""
+        return {node_id: int(degree) for node_id, degree in self._g.degree()}
+
     def get_subgraph(self, entry_id: str, depth: int = 2) -> nx.DiGraph:
         """Return an ego-subgraph centred on entry_id up to *depth* hops."""
         if entry_id not in self._g:
@@ -197,13 +209,9 @@ class KnowDoGraph:
             nodes.update(frontier)
         return self._g.subgraph(nodes).copy()
 
-    def find_paths(
-        self, source_id: str, target_id: str, cutoff: int = 6
-    ) -> list[list[str]]:
+    def find_paths(self, source_id: str, target_id: str, cutoff: int = 6) -> list[list[str]]:
         try:
-            return list(
-                nx.all_simple_paths(self._g, source_id, target_id, cutoff=cutoff)
-            )
+            return list(nx.all_simple_paths(self._g, source_id, target_id, cutoff=cutoff))
         except (nx.NodeNotFound, nx.NetworkXNoPath):
             return []
 
@@ -213,6 +221,16 @@ class KnowDoGraph:
             "edges": self._g.number_of_edges(),
             "is_dag": nx.is_directed_acyclic_graph(self._g),
             "unreviewed_nodes": self._g.graph["unreviewed_nodes"],
+        }
+
+    def full_dump(self) -> dict:
+        """Return serializable node and edge data for API/UI consumers."""
+        return {
+            "nodes": [{"id": node_id, **data} for node_id, data in self._g.nodes(data=True)],
+            "edges": [
+                {"source": source, "target": target, **data}
+                for source, target, data in self._g.edges(data=True)
+            ],
         }
 
     def rebuild_from_db(self, entries: list[Entry], edges: list[Edge]) -> None:

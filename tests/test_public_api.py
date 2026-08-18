@@ -207,6 +207,28 @@ class PublicApiTests(unittest.TestCase):
             self.assertEqual(other.stats()["nodes"], 1)
         self.assertEqual(self.graph.stats()["nodes"], 0)
 
+    def test_legacy_public_entry_types_normalize_to_four_canonical_types(self) -> None:
+        tool = self.graph.add(
+            "Legacy Tool Node",
+            content="A tool-style node.",
+            entry_type="tool",
+        )
+        self.assertEqual(tool.entry_type, EntryType.procedure)
+        self.assertEqual(tool.metadata.subtype, "tool")
+        self.assertEqual(self.graph.search(entry_type="tool")[0].id, tool.id)
+
+        dependency = self.graph.add(
+            "Legacy Dependency Node",
+            content="A dependency-style node.",
+            entry_type="dependency",
+        )
+        self.assertEqual(dependency.entry_type, EntryType.constraint)
+        self.assertEqual(dependency.metadata.subtype, "dependency")
+
+        updated = self.graph.update(tool.id, entry_type="analytical")
+        self.assertEqual(updated.entry_type, EntryType.heuristic)
+        self.assertEqual(updated.metadata.subtype, "analytical")
+
     def test_review_counts_and_global_unreviewed_metadata(self) -> None:
         from agents.review_agent.tools import mark_reviewed
         from core.storage.database import bind_session_factory
@@ -392,9 +414,7 @@ class PublicApiTests(unittest.TestCase):
             self.graph.add("Excluded memory", entry_type=EntryType.memory)
             self.graph.add(
                 "Protected node",
-                metadata=EntryMetadata(
-                    verification_status=VerificationStatus.peer_reviewed
-                ),
+                metadata=EntryMetadata(verification_status=VerificationStatus.peer_reviewed),
             )
             scheduler.notify_node_created(self.graph.get(reviewed.id))
 
@@ -424,9 +444,7 @@ class PublicApiTests(unittest.TestCase):
     def test_auto_review_existing_backlog_respects_policy(self) -> None:
         self.graph.add("Existing memory", entry_type=EntryType.memory)
         protected = self.graph.add("Existing protected node")
-        self.graph.set_verification_status(
-            protected.id, VerificationStatus.peer_reviewed
-        )
+        self.graph.set_verification_status(protected.id, VerificationStatus.peer_reviewed)
         self.graph.add("Existing eligible node")
         policy = ReviewPolicy(
             exclude_types={EntryType.memory},

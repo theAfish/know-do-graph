@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from core.schemas.edge import Edge
 from core.schemas.entry import Entry, entry_type_value
+from core.utils.slug import slug_from_title
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ def _notify(event_type: str, data: dict) -> None:
     """
     try:
         from core import events as _events
+
         _events.emit(event_type, data)
     except Exception:
         pass
@@ -32,9 +34,7 @@ def _unique_slug(db: Session, base_slug: str, entry_id: str) -> str:
 
     def _taken(s: str) -> bool:
         return (
-            db.query(EntryModel)
-            .filter(EntryModel.slug == s, EntryModel.id != entry_id)
-            .first()
+            db.query(EntryModel).filter(EntryModel.slug == s, EntryModel.id != entry_id).first()
             is not None
         )
 
@@ -52,34 +52,9 @@ def _refresh_embedding(db: Session, entry: Entry, model) -> None:
 
     Failures are logged and swallowed — embedding must never break writes.
     """
-    from core.retrieval import vector_store
-    from core.retrieval.embedder import build_embedding_text, get_default_embedder, text_hash
+    from core.services.embeddings import refresh_entry_embedding_after_commit
 
-    try:
-        embedder = get_default_embedder()
-        if not embedder.available:
-            return
-        text = build_embedding_text(
-            title=entry.title,
-            aliases=entry.aliases,
-            tags=entry.tags,
-            content=entry.content,
-        )
-        new_hash = text_hash(text)
-        if model.embedding_hash == new_hash:
-            return
-        vec = embedder.embed([text])[0]
-        if not vec:
-            return
-        if vector_store.upsert(db, entry.id, vec):
-            model.embedding_hash = new_hash
-            db.commit()
-    except Exception as exc:
-        logger.warning("embedding refresh failed for %s: %s", entry.id, exc)
-        try:
-            db.rollback()
-        except Exception:
-            pass
+    refresh_entry_embedding_after_commit(db, entry, model)
 
 
 class EntryRepository:
@@ -93,7 +68,7 @@ class EntryRepository:
         entry.metadata.review_count = 0
         entry.metadata.modify_count = 0
         entry.metadata.last_reviewed_at = None
-        slug = _unique_slug(self._db, entry.slug or _slug(entry.title), entry.id)
+        slug = _unique_slug(self._db, entry.slug or slug_from_title(entry.title), entry.id)
         model = EntryModel(
             id=entry.id,
             title=entry.title,
@@ -115,7 +90,7 @@ class EntryRepository:
         saved = Entry(**model.to_dict())
         _refresh_embedding(self._db, saved, model)
         if not saved.metadata.disabled:
-            _notify("node_added", {"id": saved.id, "title": saved.title, "slug": saved.slug})
+            _notify("node_added", _entry_event_payload(saved))
         return saved
 
     def update(self, entry: Entry) -> Optional[Entry]:
@@ -124,9 +99,9 @@ class EntryRepository:
         model = self._db.get(EntryModel, entry.id)
         if not model:
             return None
-        was_disabled = bool(json.loads(model.metadata_json or "{}").get("disabled", False))
         model.title = entry.title
-        model.slug = _unique_slug(self._db, entry.slug or _slug(entry.title), entry.id)
+        model.slug = _unique_slug(self._db, entry.slug or slug_from_title(entry.title), entry.id)
+        was_disabled = bool(json.loads(model.metadata_json or "{}").get("disabled", False))
         model.entry_type = entry_type_value(entry.entry_type)
         model.content = entry.content
         model.tags = json.dumps(entry.tags)
@@ -143,9 +118,9 @@ class EntryRepository:
         if saved.metadata.disabled:
             _notify("node_removed", {"id": saved.id})
         elif was_disabled:
-            _notify("node_added", {"id": saved.id, "title": saved.title, "slug": saved.slug})
+            _notify("node_added", _entry_event_payload(saved))
         else:
-            _notify("node_updated", {"id": saved.id, "title": saved.title, "slug": saved.slug})
+            _notify("node_updated", _entry_event_payload(saved))
         return saved
 
     def delete(self, entry_id: str) -> bool:
@@ -157,10 +132,7 @@ class EntryRepository:
             return False
         incident_edges = (
             self._db.query(EdgeModel)
-            .filter(
-                (EdgeModel.source_id == entry_id)
-                | (EdgeModel.target_id == entry_id)
-            )
+            .filter((EdgeModel.source_id == entry_id) | (EdgeModel.target_id == entry_id))
             .all()
         )
         removed_edges = [
@@ -189,6 +161,16 @@ class EntryRepository:
         return [Entry(**row.to_dict()) for row in rows]
 
 
+def _entry_event_payload(entry: Entry) -> dict:
+    return {
+        "id": entry.id,
+        "title": entry.title,
+        "slug": entry.slug,
+        "entry_type": entry_type_value(entry.entry_type),
+        "tags": entry.tags,
+    }
+
+
 class EdgeRepository:
     def __init__(self, db: Session) -> None:
         self._db = db
@@ -199,7 +181,9 @@ class EdgeRepository:
         # Skip duplicates (same source/target/relation)
         existing = (
             self._db.query(EdgeModel)
-            .filter_by(source_id=edge.source_id, target_id=edge.target_id, relation=edge.relation.value)
+            .filter_by(
+                source_id=edge.source_id, target_id=edge.target_id, relation=edge.relation.value
+            )
             .first()
         )
         if existing:
@@ -216,12 +200,15 @@ class EdgeRepository:
         )
         self._db.add(model)
         self._db.commit()
-        _notify("edge_added", {
-            "id": edge.id,
-            "source_id": edge.source_id,
-            "target_id": edge.target_id,
-            "relation": edge.relation.value,
-        })
+        _notify(
+            "edge_added",
+            {
+                "id": edge.id,
+                "source_id": edge.source_id,
+                "target_id": edge.target_id,
+                "relation": edge.relation.value,
+            },
+        )
         return edge
 
     def delete(self, edge_id: str) -> bool:
@@ -233,7 +220,9 @@ class EdgeRepository:
         src, tgt, rel = model.source_id, model.target_id, model.relation
         self._db.delete(model)
         self._db.commit()
-        _notify("edge_removed", {"id": edge_id, "source_id": src, "target_id": tgt, "relation": rel})
+        _notify(
+            "edge_removed", {"id": edge_id, "source_id": src, "target_id": tgt, "relation": rel}
+        )
         return True
 
     def get_all(self) -> list[Edge]:
@@ -257,6 +246,7 @@ _CHAR_SUBS: dict[str, str] = {
 
 def _slug(title: str) -> str:
     import unicodedata
+
     for sym, replacement in _CHAR_SUBS.items():
         title = title.replace(sym, f" {replacement} ")
     parts: list[str] = []

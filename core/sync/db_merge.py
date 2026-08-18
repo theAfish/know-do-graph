@@ -24,7 +24,6 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -86,19 +85,25 @@ def merge_database(
 
     report = MergeReport()
     OtherSession = _open_readonly(Path(other_db_path))
+    other_engine = OtherSession.kw.get("bind")
 
-    with OtherSession() as src_db:
-        src_entry_models = src_db.query(EntryModel).all()
-        src_edge_models = src_db.query(EdgeModel).all()
-        # Capture raw fields up-front so we don't hold the read-only session open.
-        src_entries: list[tuple[dict, object, object]] = [
-            (m.to_dict(), m.created_at, m.updated_at) for m in src_entry_models
-        ]
-        src_edges: list[dict] = [m.to_dict() for m in src_edge_models]
+    try:
+        with OtherSession() as src_db:
+            src_entry_models = src_db.query(EntryModel).all()
+            src_edge_models = src_db.query(EdgeModel).all()
+            # Capture raw fields up-front so we don't hold the read-only session open.
+            src_entries: list[tuple[dict, object, object]] = [
+                (m.to_dict(), m.created_at, m.updated_at) for m in src_entry_models
+            ]
+            src_edges: list[dict] = [m.to_dict() for m in src_edge_models]
+    finally:
+        if other_engine is not None:
+            other_engine.dispose()
 
     logger.info(
         "db merge: source has %d entries, %d edges",
-        len(src_entries), len(src_edges),
+        len(src_entries),
+        len(src_edges),
     )
 
     with SessionLocal() as dst_db:
@@ -121,7 +126,11 @@ def merge_database(
             if prefer == "local":
                 report.entries_skipped += 1
                 continue
-            if prefer == "newer" and (local.updated_at and src_updated) and local.updated_at >= src_updated:
+            if (
+                prefer == "newer"
+                and (local.updated_at and src_updated)
+                and local.updated_at >= src_updated
+            ):
                 report.entries_skipped += 1
                 continue
             dst_repo.update(incoming)
@@ -132,8 +141,7 @@ def merge_database(
         # ``EdgeRepository.create`` de-dups on (source, target, relation) and
         # returns the existing edge if one is already present.
         existing_keys = {
-            (m.source_id, m.target_id, m.relation)
-            for m in dst_db.query(EdgeModel).all()
+            (m.source_id, m.target_id, m.relation) for m in dst_db.query(EdgeModel).all()
         }
         for d in src_edges:
             key = (d["source_id"], d["target_id"], d["relation"])
@@ -157,7 +165,8 @@ def merge_database(
         report.wikilinks_resolved = ExtractionAgent(app_state.graph).resolve_wikilinks()
 
     # Refresh in-memory graph and notify any connected UIs.
-    from core import app_state, events as _events
+    from core import app_state
+    from core import events as _events
     from core.sync.db_watcher import reload_graph_from_db
 
     nodes, edges = reload_graph_from_db(app_state.graph)
@@ -180,6 +189,7 @@ class DedupReport:
 def _slug_stem(slug: str) -> str:
     """Strip a trailing ``-<digits>`` collision suffix (e.g. ``mace-2`` \u2192 ``mace``)."""
     import re
+
     return re.sub(r"-\d+$", "", slug or "")
 
 
@@ -225,7 +235,8 @@ def _pick_primary(group: list[Entry]) -> Entry:
 def dedup_exact(*, dry_run: bool = True) -> DedupReport:
     """Merge entries that are exact duplicates (same slug-stem or normalized title)."""
     from agents.graph_agent.tools import merge_entries
-    from core import app_state, events as _events
+    from core import app_state
+    from core import events as _events
     from core.sync.db_watcher import reload_graph_from_db
 
     report = DedupReport()
@@ -235,13 +246,15 @@ def dedup_exact(*, dry_run: bool = True) -> DedupReport:
         for dup in group:
             if dup.id == primary.id:
                 continue
-            report.candidates.append({
-                "primary_id": primary.id,
-                "primary_slug": primary.slug,
-                "duplicate_id": dup.id,
-                "duplicate_slug": dup.slug,
-                "reason": "exact",
-            })
+            report.candidates.append(
+                {
+                    "primary_id": primary.id,
+                    "primary_slug": primary.slug,
+                    "duplicate_id": dup.id,
+                    "duplicate_slug": dup.slug,
+                    "reason": "exact",
+                }
+            )
             if not dry_run:
                 res = merge_entries(primary.id, dup.id, graph=app_state.graph)
                 if res.get("merged"):
@@ -259,9 +272,11 @@ def find_similar_groups(threshold: float = 0.92, top_k: int = 20) -> list[dict]:
     Returns a list of ``{"a_id", "b_id", "similarity"}`` dicts. Empty if the
     sqlite-vec index is unavailable.
     """
-    from sqlalchemy import text as _text
-    from core.retrieval.vector_store import _table_available, knn  # type: ignore
     import struct
+
+    from sqlalchemy import text as _text
+
+    from core.retrieval.vector_store import _table_available, knn  # type: ignore
 
     with SessionLocal() as db:
         if not _table_available(db):

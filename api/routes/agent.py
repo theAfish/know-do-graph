@@ -9,6 +9,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from api.schemas import AgentMemoryReviewJob, AgentTextResponse
 from core.app_state import graph as _graph
 
 router = APIRouter()
@@ -70,7 +71,7 @@ def _run_memory_review_job(job_id: str, body: MemoryReviewRequest) -> None:
         )
 
 
-@router.post("/graph/chat", tags=["agent"])
+@router.post("/graph/chat", response_model=AgentTextResponse, tags=["agent"])
 def graph_agent_chat(body: ChatRequest) -> dict:
     """Send a message to the GraphAgent and receive its response."""
     import os
@@ -85,7 +86,7 @@ def graph_agent_chat(body: ChatRequest) -> dict:
     return {"response": response}
 
 
-@router.post("/review/run", tags=["agent"])
+@router.post("/review/run", response_model=AgentTextResponse, tags=["agent"])
 def review_agent_run(body: ReviewRequest) -> dict:
     """Run one review session with the ReviewAgent."""
     import os
@@ -100,7 +101,12 @@ def review_agent_run(body: ReviewRequest) -> dict:
     return {"response": response}
 
 
-@router.post("/review/memory", tags=["agent"], status_code=202)
+@router.post(
+    "/review/memory",
+    response_model=AgentMemoryReviewJob,
+    tags=["agent"],
+    status_code=202,
+)
 def start_memory_review(body: MemoryReviewRequest) -> dict:
     """Start a memory-distillation review and return a pollable job."""
     import os
@@ -130,7 +136,7 @@ def start_memory_review(body: MemoryReviewRequest) -> dict:
     return initial
 
 
-@router.get("/review/memory/{job_id}", tags=["agent"])
+@router.get("/review/memory/{job_id}", response_model=AgentMemoryReviewJob, tags=["agent"])
 def get_memory_review(job_id: str) -> dict:
     """Return running progress, completed results, and errors for a review job."""
     with _memory_review_jobs_lock:
@@ -142,7 +148,7 @@ def get_memory_review(job_id: str) -> dict:
     return result
 
 
-@router.post("/review/chat", tags=["agent"])
+@router.post("/review/chat", response_model=AgentTextResponse, tags=["agent"])
 def review_agent_chat(body: ChatRequest) -> dict:
     """Send a single message to the ReviewAgent."""
     import os
@@ -157,7 +163,7 @@ def review_agent_chat(body: ChatRequest) -> dict:
     return {"response": response}
 
 
-@router.post("/orchestrate", tags=["agent"])
+@router.post("/orchestrate", response_model=AgentTextResponse, tags=["agent"])
 def orchestrate(body: ChatRequest) -> dict:
     """Route a request through the Orchestrator to the appropriate agent(s)."""
     import os

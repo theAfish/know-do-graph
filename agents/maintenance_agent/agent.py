@@ -94,12 +94,14 @@ class MaintenanceAgent:
 
         with SessionLocal() as db:
             saved = EntryRepository(db).create(entry)
-            edge = EdgeRepository(db).create(Edge(
-                source_id=mem_entry.id,
-                target_id=saved.id,
-                relation=EdgeRelation.refinement_of,
-                metadata={"source": "memory_promotion"},
-            ))
+            edge = EdgeRepository(db).create(
+                Edge(
+                    source_id=mem_entry.id,
+                    target_id=saved.id,
+                    relation=EdgeRelation.refinement_of,
+                    metadata={"source": "memory_promotion"},
+                )
+            )
         self._graph.add_entry(saved)
         self._graph.add_edge(edge)
         mg.mark_promoted(mem_id, saved.id)
@@ -116,8 +118,7 @@ class MaintenanceAgent:
         with SessionLocal() as db:
             entries = EntryRepository(db).get_all()
         return [
-            e for e in entries
-            if e.metadata.verification_status == VerificationStatus.unverified
+            e for e in entries if e.metadata.verification_status == VerificationStatus.unverified
         ][:limit]
 
     def list_bugged(self, limit: int = 100) -> list[Entry]:
@@ -126,10 +127,9 @@ class MaintenanceAgent:
 
         with SessionLocal() as db:
             entries = EntryRepository(db).get_all()
-        return [
-            e for e in entries
-            if e.metadata.verification_status == VerificationStatus.bugged
-        ][:limit]
+        return [e for e in entries if e.metadata.verification_status == VerificationStatus.bugged][
+            :limit
+        ]
 
     def list_needs_generalization(self, limit: int = 100) -> list[Entry]:
         """Return entries flagged by the abstraction check."""
@@ -165,7 +165,6 @@ class MaintenanceAgent:
         created when ``dry_run=False``. Returns a summary dict describing what
         was (or would be) extracted.
         """
-        import re
 
         from core.retrieval.retrieval import RetrievalEngine
         from core.schemas.edge import Edge, EdgeRelation
@@ -178,8 +177,16 @@ class MaintenanceAgent:
 
         l3_keywords = ("heuristic", "rule of thumb", "tips", "best practice", "tip:", "guideline")
         l4_keywords = (
-            "limitation", "failure", "caveat", "warning", "pitfall",
-            "do not use", "not suitable", "unsuitable", "instability", "known issue",
+            "limitation",
+            "failure",
+            "caveat",
+            "warning",
+            "pitfall",
+            "do not use",
+            "not suitable",
+            "unsuitable",
+            "instability",
+            "known issue",
         )
 
         with SessionLocal() as db:
@@ -252,9 +259,7 @@ class MaintenanceAgent:
                 # Denormalise constraint slugs on parent.
                 if created_c:
                     entry.metadata.failure_modes = list(
-                        dict.fromkeys(
-                            entry.metadata.failure_modes + [c["slug"] for c in created_c]
-                        )
+                        dict.fromkeys(entry.metadata.failure_modes + [c["slug"] for c in created_c])
                     )
                     repo.update(entry)
 

@@ -13,6 +13,8 @@ from core.retrieval.progressive import ProgressiveRetriever
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import Edge, EdgeRelation
 from core.schemas.entry import Entry, EntryMetadata, EntryType, VerificationStatus
+from core.services import edges as edge_service
+from core.services import entries as entry_service
 from core.storage.database import create_database_engine, initialize_database
 from core.storage.repository import EdgeRepository, EntryRepository
 
@@ -77,25 +79,25 @@ class KnowDoGraph:
         title: str,
         *,
         content: str = "",
-        entry_type: EntryType | str = EntryType.generic,
+        entry_type: EntryType | str = EntryType.capability,
         tags: Optional[Iterable[str]] = None,
         aliases: Optional[Iterable[str]] = None,
         metadata: EntryMetadata | dict[str, Any] | None = None,
         **fields: Any,
     ) -> Entry:
         """Create and persist an entry."""
-        entry = Entry(
-            title=title,
-            content=content,
-            entry_type=EntryType(entry_type),
-            tags=list(tags or []),
-            aliases=list(aliases or []),
-            metadata=self._metadata(metadata),
-            **fields,
-        )
         with self._session() as db:
-            saved = EntryRepository(db).create(entry)
-        self._graph.add_entry(saved)
+            saved = entry_service.create_entry(
+                db,
+                self._graph,
+                title=title,
+                content=content,
+                entry_type=entry_type,
+                tags=tags,
+                aliases=aliases,
+                metadata=metadata,
+                **fields,
+            )
         for scheduler in list(self._auto_reviewers):
             scheduler.notify_node_created(saved)
         return saved
@@ -128,13 +130,12 @@ class KnowDoGraph:
         disabled: bool = False,
     ) -> list[Entry] | list[tuple[Entry, float]]:
         """Search entries using keyword, semantic, or hybrid retrieval."""
-        normalized_type = EntryType(entry_type) if entry_type is not None else None
         with self._session() as db:
             retrieval = RetrievalEngine(db, self._graph)
             kwargs = {
                 "query": query,
                 "tags": list(tags) if tags is not None else None,
-                "entry_type": normalized_type,
+                "entry_type": entry_type,
                 "limit": limit,
                 "mode": mode,
                 "disabled": disabled,
@@ -167,22 +168,11 @@ class KnowDoGraph:
 
     def update(self, identifier: str, **changes: Any) -> Entry:
         """Update selected fields on an existing entry."""
-        current = self.get(identifier)
-        if current is None:
-            raise KeyError(f"Entry not found: {identifier}")
-        if "entry_type" in changes:
-            changes["entry_type"] = EntryType(changes["entry_type"])
-        if "metadata" in changes:
-            changes["metadata"] = self._metadata(changes["metadata"])
-        updated = current.model_copy(update=changes, deep=True)
-        updated.refresh_refs()
-        updated._sync_scripts_and_assets()
         with self._session() as db:
-            saved = EntryRepository(db).update(updated)
-        if saved is None:
-            raise KeyError(f"Entry not found: {identifier}")
-        self._graph.add_entry(saved)
-        return saved
+            try:
+                return entry_service.update_entry(db, self._graph, identifier, **changes)
+            except Exception as exc:
+                raise KeyError(f"Entry not found: {identifier}") from exc
 
     def set_verification_status(
         self,
@@ -190,24 +180,14 @@ class KnowDoGraph:
         status: VerificationStatus | str,
     ) -> Entry:
         """Manually assign any verification status to a node."""
-        current = self._require(identifier)
-        current.metadata.verification_status = VerificationStatus(status)
         with self._session() as db:
-            saved = EntryRepository(db).update(current)
-        if saved is None:
-            raise KeyError(f"Entry not found: {identifier}")
-        self._graph.add_entry(saved)
-        return saved
+            current = entry_service.resolve_required(db, self._graph, identifier)
+            current.metadata.verification_status = VerificationStatus(status)
+            return entry_service.replace_entry(db, self._graph, current)
 
     def delete(self, identifier: str) -> bool:
-        entry = self.get(identifier)
-        if entry is None:
-            return False
         with self._session() as db:
-            deleted = EntryRepository(db).delete(entry.id)
-        if deleted:
-            self._graph.remove_entry(entry.id)
-        return deleted
+            return entry_service.delete_entry(db, self._graph, identifier)
 
     def connect(
         self,
@@ -219,19 +199,16 @@ class KnowDoGraph:
         metadata: Optional[dict[str, Any]] = None,
     ) -> Edge:
         """Connect two entries, resolving each by ID, slug, or alias."""
-        source_entry = self._require(source)
-        target_entry = self._require(target)
-        edge = Edge(
-            source_id=source_entry.id,
-            target_id=target_entry.id,
-            relation=EdgeRelation(relation),
-            weight=weight,
-            metadata=metadata or {},
-        )
         with self._session() as db:
-            saved = EdgeRepository(db).create(edge)
-        self._graph.add_edge(saved)
-        return saved
+            return edge_service.connect_entries(
+                db,
+                self._graph,
+                source,
+                target,
+                relation=relation,
+                weight=weight,
+                metadata=metadata,
+            )
 
     def related(
         self,

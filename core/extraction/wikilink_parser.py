@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from core.utils.slug import slug_from_title
+
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]")
 _MDLINK_RE = re.compile(r"\[(?:[^\]]+)\]\((https?://[^\)]+)\)")
 
@@ -28,8 +30,9 @@ _CHAR_SUBS: dict[str, str] = {
 }
 
 
-def slug_from_title(title: str) -> str:
+def _legacy_slug_from_title(title: str) -> str:
     import unicodedata
+
     for sym, replacement in _CHAR_SUBS.items():
         title = title.replace(sym, f" {replacement} ")
     parts: list[str] = []
@@ -46,3 +49,6 @@ def slug_from_title(title: str) -> str:
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = re.sub(r"-+", "-", slug)
     return slug.strip("-")
+
+
+__all__ = ["extract_external_refs", "parse_wikilinks", "slug_from_title"]

@@ -3,22 +3,34 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from core import events as _events
+from api.schemas import (
+    AssetFolderResponse,
+    AssetMetadata,
+    EdgeListResponse,
+    EntryAssetsResponse,
+    EntryListResponse,
+    EntrySearchResponse,
+    PaginationMeta,
+    ScriptSummary,
+)
 from core.app_state import graph as _graph
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
 from core.schemas.entry import (
     Entry,
-    KNOWN_ASSET_FOLDERS,
+    EntryType,
     NodeAsset,
-    entry_type_value,
 )
+from core.services import assets as asset_service
+from core.services import entries as entry_service
+from core.services import feedback as feedback_service
+from core.services.errors import ServiceError
+from core.services.serialization import asset_meta, assets_by_folder, entries_to_dict, entry_to_dict
 from core.storage.database import get_db
-from core.storage.repository import EdgeRepository, EntryRepository
 
 router = APIRouter()
 
@@ -27,21 +39,22 @@ def _engine(db: Session = Depends(get_db)) -> RetrievalEngine:
     return RetrievalEngine(db, _graph)
 
 
-@router.get("/", response_model=list[dict])
+@router.get("/", response_model=EntryListResponse)
 def list_entries(
     limit: int = 20,
     offset: int = 0,
     disabled: bool = False,
     engine: RetrievalEngine = Depends(_engine),
 ):
-    """List enabled entries, or pass ``disabled=true`` to list hidden ones."""
-    return [
-        e.model_dump(mode="json")
-        for e in engine.list_entries(limit=limit, offset=offset, disabled=disabled)
-    ]
+    """List entries with pagination."""
+    items = engine.list_entries(limit=limit, offset=offset, disabled=disabled)
+    return {
+        "items": items,
+        "pagination": PaginationMeta(limit=limit, offset=offset, count=len(items)),
+    }
 
 
-@router.get("/search", response_model=list[dict])
+@router.get("/search", response_model=EntrySearchResponse)
 def search_entries(
     q: Optional[str] = None,
     tags: Optional[str] = None,
@@ -59,26 +72,30 @@ def search_entries(
     tag_list = [t.strip() for t in tags.split(",")] if tags else None
     if include_scores and q:
         results = engine.search_entries_scored(
-            query=q,
-            tags=tag_list,
-            entry_type=entry_type,
-            limit=limit,
-            disabled=disabled,
+            query=q, tags=tag_list, entry_type=entry_type, limit=limit, disabled=disabled
         )
-        return [{**e.model_dump(mode="json"), "_score": round(score, 4)} for e, score in results]
-    results = engine.search_entries(
-        query=q, tags=tag_list, entry_type=entry_type, limit=limit, disabled=disabled
-    )
-    return [e.model_dump(mode="json") for e in results]
+        items = [{**entry_to_dict(e), "_score": round(score, 4)} for e, score in results]
+    else:
+        results = engine.search_entries(
+            query=q, tags=tag_list, entry_type=entry_type, limit=limit, disabled=disabled
+        )
+        items = entries_to_dict(results)
+    return {
+        "items": items,
+        "pagination": PaginationMeta(limit=limit, count=len(items)),
+        "query": q,
+        "tags": tag_list,
+        "entry_type": entry_type,
+    }
 
 
-@router.get("/{entry_id}", response_model=dict)
+@router.get("/{entry_id}", response_model=Entry)
 def get_entry(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     """Retrieve a single entry by ID, slug, or alias."""
     entry = engine.resolve_identifier(entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    return entry.model_dump(mode="json")
+    return entry_to_dict(entry)
 
 
 class DisabledBody(BaseModel):
@@ -86,89 +103,52 @@ class DisabledBody(BaseModel):
 
 
 @router.put("/{entry_id}/disabled", response_model=dict)
-def set_entry_disabled(
-    entry_id: str, body: DisabledBody, db: Session = Depends(get_db)
-):
-    """Hide or restore an entry while retaining it and its edges in storage.
-
-    Disabled nodes are otherwise invisible to normal entry, search, and graph
-    endpoints. Use ``GET /entries/search?disabled=true`` to audit them.
-    """
+def set_entry_disabled(entry_id: str, body: DisabledBody, db: Session = Depends(get_db)):
+    """Hide or restore an entry without deleting its persisted data or edges."""
     engine = RetrievalEngine(db, _graph)
     entry = engine.resolve_identifier(entry_id, disabled=None)
     if entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
     entry.metadata.disabled = body.disabled
-    updated = EntryRepository(db).update(entry)
-    if updated is None:
+    try:
+        updated = entry_service.replace_entry(db, _graph, entry)
+    except ServiceError:
         raise HTTPException(status_code=404, detail="Entry not found")
-    _graph.add_entry(updated)
     if not body.disabled:
-        # Reintroduce persisted incident edges now that both endpoints may be visible.
-        entries = EntryRepository(db).get_all()
-        edges = EdgeRepository(db).get_all()
-        _graph.rebuild_from_db(entries, edges)
+        from core.storage.repository import EdgeRepository, EntryRepository
+
+        _graph.rebuild_from_db(EntryRepository(db).get_all(), EdgeRepository(db).get_all())
     return {"id": updated.id, "disabled": updated.metadata.disabled}
 
 
-@router.post("/", response_model=dict, status_code=201)
+@router.post("/", response_model=Entry, status_code=201)
 def create_entry(entry: Entry, db: Session = Depends(get_db)):
     """Create a new entry."""
-    saved = EntryRepository(db).create(entry)
-    _graph.add_entry(saved)
-    if not saved.metadata.disabled:
-        _events.emit("node_added", {
-            "id": saved.id,
-            "title": saved.title,
-            "slug": saved.slug,
-            "entry_type": entry_type_value(saved.entry_type),
-            "tags": saved.tags,
-        })
-    else:
-        # A disabled node is only inspectable through an explicit
-        # ``disabled=true`` administration query.
-        return {"id": saved.id, "disabled": True}
-    return saved.model_dump(mode="json")
+    saved = entry_service.persist_entry(db, _graph, entry)
+    return entry_to_dict(saved)
 
 
-@router.put("/{entry_id}", response_model=dict)
+@router.put("/{entry_id}", response_model=Entry)
 def update_entry(entry_id: str, entry: Entry, db: Session = Depends(get_db)):
     """Update an existing entry."""
-    existing = RetrievalEngine(db, _graph).get_entry_by_id(entry_id, disabled=None)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Entry not found")
-    if existing.metadata.disabled:
-        raise HTTPException(status_code=404, detail="Entry not found")
     entry.id = entry_id
     entry.refresh_refs()
     entry._sync_scripts_and_assets()
-    updated = EntryRepository(db).update(entry)
-    if not updated:
+    try:
+        updated = entry_service.replace_entry(db, _graph, entry)
+    except ServiceError:
         raise HTTPException(status_code=404, detail="Entry not found")
-    _graph.add_entry(updated)
-    if updated.metadata.disabled:
-        _events.emit("node_removed", {"id": updated.id})
-        return {"id": updated.id, "disabled": True}
-    _events.emit("node_updated", {
-        "id": updated.id,
-        "title": updated.title,
-        "slug": updated.slug,
-        "entry_type": entry_type_value(updated.entry_type),
-        "tags": updated.tags,
-    })
-    return updated.model_dump(mode="json")
+    return entry_to_dict(updated)
 
 
 @router.delete("/{entry_id}", status_code=204)
 def delete_entry(entry_id: str, db: Session = Depends(get_db)):
     """Delete an entry and its node from the in-memory graph."""
-    if not EntryRepository(db).delete(entry_id):
+    if not entry_service.delete_entry(db, _graph, entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
-    _graph.remove_entry(entry_id)
-    _events.emit("node_removed", {"id": entry_id})
 
 
-@router.get("/{entry_id}/related", response_model=list[dict])
+@router.get("/{entry_id}/related", response_model=EntryListResponse)
 def get_related(
     entry_id: str,
     depth: int = 1,
@@ -177,16 +157,23 @@ def get_related(
 ):
     """Return entries related to *entry_id* via the graph."""
     related = engine.get_related_entries(entry_id, depth=depth, relation=relation)
-    return [e.model_dump(mode="json") for e in related]
+    return {
+        "items": related,
+        "pagination": PaginationMeta(limit=len(related), count=len(related)),
+    }
 
 
-@router.get("/{entry_id}/edges", response_model=list[dict])
+@router.get("/{entry_id}/edges", response_model=EdgeListResponse)
 def get_edges(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     """Return all edges incident to *entry_id*."""
-    return [e.model_dump(mode="json") for e in engine.get_edges_for_entry(entry_id)]
+    items = engine.get_edges_for_entry(entry_id)
+    return {
+        "items": items,
+        "pagination": PaginationMeta(limit=len(items), count=len(items)),
+    }
 
 
-@router.get("/{entry_id}/scripts")
+@router.get("/{entry_id}/scripts", response_model=list[ScriptSummary])
 def list_entry_scripts(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     """List all scripts attached to an entry (metadata only — no code bodies)."""
     entry = engine.resolve_identifier(entry_id)
@@ -269,23 +256,7 @@ def _media_type_for_language(language: str) -> str:
 # ── Folder-style assets ─────────────────────────────────────────────────────
 
 
-def _asset_meta(entry_id: str, asset: NodeAsset) -> dict:
-    return {
-        "folder": asset.folder,
-        "filename": asset.filename,
-        "path": asset.path,
-        "kind": asset.kind,
-        "language": asset.language,
-        "mime_type": asset.mime_type,
-        "description": asset.description,
-        "requirements": asset.requirements,
-        "size": len(asset.content or ""),
-        "download_url": f"/entries/{entry_id}/assets/{asset.folder}/{asset.filename}",
-        "metadata": asset.metadata,
-    }
-
-
-@router.get("/{entry_id}/assets")
+@router.get("/{entry_id}/assets", response_model=EntryAssetsResponse)
 def list_entry_assets(entry_id: str, engine: RetrievalEngine = Depends(_engine)):
     """List all assets attached to an entry, grouped by folder.
 
@@ -295,16 +266,7 @@ def list_entry_assets(entry_id: str, engine: RetrievalEngine = Depends(_engine))
     entry = engine.resolve_identifier(entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    grouped: dict[str, list[dict]] = {}
-    for a in entry.assets:
-        grouped.setdefault(a.folder, []).append(_asset_meta(entry.id, a))
-    # Stable ordering: known folders first, then any extras alphabetically
-    ordered = {}
-    for f in KNOWN_ASSET_FOLDERS:
-        if f in grouped:
-            ordered[f] = grouped.pop(f)
-    for f in sorted(grouped.keys()):
-        ordered[f] = grouped[f]
+    ordered = assets_by_folder(entry)
     return {
         "entry_id": entry.id,
         "slug": entry.slug,
@@ -313,7 +275,7 @@ def list_entry_assets(entry_id: str, engine: RetrievalEngine = Depends(_engine))
     }
 
 
-@router.get("/{entry_id}/assets/{folder}")
+@router.get("/{entry_id}/assets/{folder}", response_model=AssetFolderResponse)
 def list_entry_assets_in_folder(
     entry_id: str, folder: str, engine: RetrievalEngine = Depends(_engine)
 ):
@@ -321,7 +283,7 @@ def list_entry_assets_in_folder(
     entry = engine.resolve_identifier(entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    items = [_asset_meta(entry.id, a) for a in entry.assets if a.folder == folder.lower()]
+    items = [asset_meta(entry.id, a) for a in entry.assets if a.folder == folder.lower()]
     return {"entry_id": entry.id, "folder": folder.lower(), "items": items}
 
 
@@ -382,55 +344,32 @@ class AssetBody(BaseModel):
     metadata: dict = {}
 
 
-@router.post("/{entry_id}/assets", status_code=201)
-def add_entry_asset(
-    entry_id: str, body: AssetBody, db: Session = Depends(get_db)
-):
+@router.post("/{entry_id}/assets", response_model=AssetMetadata, status_code=201)
+def add_entry_asset(entry_id: str, body: AssetBody, db: Session = Depends(get_db)):
     """Add or replace an asset on an entry.
 
     If an asset with the same ``folder/filename`` exists it is replaced.
     """
-    engine = RetrievalEngine(db, _graph)
-    entry = engine.resolve_identifier(entry_id)
-    if not entry:
-        raise HTTPException(status_code=404, detail="Entry not found")
     try:
         new_asset = NodeAsset(**body.model_dump())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    entry.assets = [
-        a for a in entry.assets
-        if not (a.folder == new_asset.folder and a.filename == new_asset.filename)
-    ]
-    entry.assets.append(new_asset)
-    updated = EntryRepository(db).update(entry)
-    if updated is None:
-        raise HTTPException(status_code=500, detail="Failed to update entry")
-    _graph.add_entry(updated)
-    return _asset_meta(updated.id, new_asset)
+    try:
+        updated_id, saved_asset = asset_service.add_or_replace_asset(
+            db, _graph, entry_id, new_asset
+        )
+    except ServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    return asset_meta(updated_id, saved_asset)
 
 
 @router.delete("/{entry_id}/assets/{folder}/{filename:path}", status_code=204)
-def delete_entry_asset(
-    entry_id: str, folder: str, filename: str, db: Session = Depends(get_db)
-):
+def delete_entry_asset(entry_id: str, folder: str, filename: str, db: Session = Depends(get_db)):
     """Delete a single asset from an entry."""
-    engine = RetrievalEngine(db, _graph)
-    entry = engine.resolve_identifier(entry_id)
-    if not entry:
-        raise HTTPException(status_code=404, detail="Entry not found")
-    folder_n = folder.lower()
-    before = len(entry.assets)
-    entry.assets = [
-        a for a in entry.assets
-        if not (a.folder == folder_n and a.filename == filename)
-    ]
-    if len(entry.assets) == before:
-        raise HTTPException(status_code=404, detail="Asset not found")
-    updated = EntryRepository(db).update(entry)
-    if updated is None:
-        raise HTTPException(status_code=500, detail="Failed to update entry")
-    _graph.add_entry(updated)
+    try:
+        asset_service.delete_asset(db, _graph, entry_id, folder, filename)
+    except ServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
 # ── Feedback / verification ──────────────────────────────────────────────────
@@ -452,16 +391,15 @@ def post_entry_feedback(entry_id: str, body: FeedbackBody, db: Session = Depends
     ``metadata.feedback_log``. This is the canonical channel for external
     agents to flag a node as working or bugged.
     """
-    from agents.graph_agent.tools import submit_feedback
-
-    result = submit_feedback(
-        entry_id=entry_id,
-        verdict=body.verdict,
-        note=body.note,
-        evidence=body.evidence,
-        agent_id=body.agent_id,
-        graph=_graph,
-    )
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    try:
+        return feedback_service.record_feedback(
+            db,
+            _graph,
+            entry_id,
+            verdict=body.verdict,
+            note=body.note,
+            evidence=body.evidence,
+            agent_id=body.agent_id,
+        )
+    except ServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))

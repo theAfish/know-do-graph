@@ -7,7 +7,7 @@ export function escHtml(s) {
 }
 
 export function escAttr(s) {
-  return String(s ?? '').replace(/'/g, "\\'");
+  return escHtml(s).replace(/'/g, '&#39;');
 }
 
 export function debounce(fn, ms) {

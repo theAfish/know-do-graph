@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version as package_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 
 try:
     from core._version import version as __version__

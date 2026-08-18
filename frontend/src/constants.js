@@ -1,35 +1,50 @@
-export const TYPE_COLORS = {
+export const PUBLIC_TYPE_COLORS = {
   capability: '#238636',
   procedure: '#1f6feb',
-  workflow: '#d29922',
-  tool: '#8957e5',
-  repository: '#bf8700',
-  environment: '#1a7f5a',
-  dependency: '#cf222e',
-  data: '#388bfd',
-  analytical: '#a371f7',
-  memory: '#6e7781',
   heuristic: '#db61a2',
   constraint: '#f85149',
+};
+
+export const LEGACY_TYPE_GROUPS = {
+  workflow: '#238636',
+  tool: '#1f6feb',
+  repository: '#1f6feb',
+  data: '#1f6feb',
+  environment: '#f85149',
+  dependency: '#f85149',
+  analytical: '#db61a2',
+  memory: '#6e7781',
   generic: '#444c56',
 };
 
-export const ENTRY_TYPES = Object.keys(TYPE_COLORS);
+export const TYPE_COLORS = {
+  ...PUBLIC_TYPE_COLORS,
+  ...LEGACY_TYPE_GROUPS,
+};
 
-function colorFromTypeName(type) {
-  let hash = 0;
-  for (const char of String(type || 'generic')) {
-    hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
-  }
-  // D3's colour parser accepts the legacy comma form across supported versions.
-  return `hsl(${Math.abs(hash) % 360}, 58%, 48%)`;
-}
+export const ENTRY_TYPES = ['capability', 'procedure', 'heuristic', 'constraint'];
 
-export const colorFor = (type) => TYPE_COLORS[type] || colorFromTypeName(type);
+export const canonicalTypeFor = (type) => {
+  if (ENTRY_TYPES.includes(type)) return type;
+  if (['workflow'].includes(type)) return 'capability';
+  if (['tool', 'repository', 'data'].includes(type)) return 'procedure';
+  if (['analytical'].includes(type)) return 'heuristic';
+  if (['environment', 'dependency'].includes(type)) return 'constraint';
+  return type || 'capability';
+};
 
-export function colorsForTypes(types) {
-  return Object.fromEntries([...types].sort().map((type) => [type, colorFor(type)]));
-}
+export const colorFor = (type) =>
+  PUBLIC_TYPE_COLORS[canonicalTypeFor(type)] || TYPE_COLORS[type] || TYPE_COLORS.generic;
+
+export const isVirtualNode = (node) => {
+  const tags = Array.isArray(node?.tags) ? node.tags : [];
+  return Boolean(
+    node?.virtual ||
+    node?.is_virtual ||
+    node?.metadata?.virtual ||
+    tags.some((tag) => ['placeholder', 'virtual'].includes(tag)),
+  );
+};
 
 export const VERIFICATION_COLORS = {
   unverified: '#6e7781',

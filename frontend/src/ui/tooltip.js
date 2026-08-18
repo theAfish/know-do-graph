@@ -1,22 +1,23 @@
-import { escHtml } from '../utils.js';
+import { optionalById } from '../dom.js';
 import { state } from '../state.js';
+import { escHtml } from '../utils.js';
 
-const tooltipEl = () => document.getElementById('tooltip');
+const tooltipEl = () => optionalById('tooltip');
 
 export function showTooltip(event, node) {
   const tip = tooltipEl();
   if (!tip) return;
   const md = node.metadata || {};
   let html = `<div class="tt-title">${escHtml(node.title)}</div>`;
-  html += row('type', node.entry_type || '—');
-  html += row('slug', node.slug || '—');
+  html += row('type', node.entry_type || '-');
+  html += row('slug', node.slug || '-');
   const relevance = state.searchScores[node.id];
   if (relevance != null) html += row('relevance', `${Math.round(relevance * 100)}%`);
   if (md.refinement_status) html += row('status', md.refinement_status);
   if (md.trust_score != null) html += row('trust', md.trust_score);
   if (md.usage_count != null) html += row('usage', md.usage_count);
-  if (node.tags && node.tags.length) {
-    const pills = node.tags.map((t) => `<span>${escHtml(t)}</span>`).join('');
+  if (node.tags?.length) {
+    const pills = node.tags.map((tag) => `<span>${escHtml(tag)}</span>`).join('');
     html += `<div class="tt-row"><span class="tt-key">tags</span><span class="tt-val tt-tags">${pills}</span></div>`;
   }
   tip.innerHTML = html;
@@ -38,8 +39,8 @@ export function moveTooltip(event) {
   let y = event.clientY + pad;
   if (x + tw > window.innerWidth) x = event.clientX - tw - pad;
   if (y + th > window.innerHeight) y = event.clientY - th - pad;
-  tip.style.left = x + 'px';
-  tip.style.top = y + 'px';
+  tip.style.left = `${x}px`;
+  tip.style.top = `${y}px`;
 }
 
 export function hideTooltip() {

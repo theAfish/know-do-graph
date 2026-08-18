@@ -1,6 +1,7 @@
 import * as d3 from 'd3';
-import { colorFor, TYPE_COLORS } from '../constants.js';
+import { colorFor, isVirtualNode, TYPE_COLORS } from '../constants.js';
 import { state, emit, EVENTS } from '../state.js';
+import { byId } from '../dom.js';
 
 let simulation;
 let svgSel;
@@ -12,7 +13,10 @@ let degreeMap = {};
 const NODE_TITLE_LINE_LENGTH = 20;
 
 function splitNodeTitle(title, maxLineLength = NODE_TITLE_LINE_LENGTH) {
-  const words = String(title || '').trim().split(/\s+/).filter(Boolean);
+  const words = String(title || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
   if (!words.length) return [];
 
   const lines = [];
@@ -36,8 +40,7 @@ function splitNodeTitle(title, maxLineLength = NODE_TITLE_LINE_LENGTH) {
 
   const wasTruncated = remaining.length > 0 || words.join(' ').length > lines.join(' ').length;
   if (wasTruncated && lines.length) {
-    lines[lines.length - 1] =
-      `${lines[lines.length - 1].slice(0, maxLineLength - 3).trimEnd()}...`;
+    lines[lines.length - 1] = `${lines[lines.length - 1].slice(0, maxLineLength - 3).trimEnd()}...`;
   }
 
   return lines;
@@ -55,9 +58,9 @@ export function render(nodes, edges, initialAlpha = 0.8) {
   state.allNodes = nodes;
   state.allEdges = edges;
 
-  document.getElementById('loading').classList.add('hidden');
+  byId('loading').classList.add('hidden');
 
-  const svgEl = document.getElementById('graph-svg');
+  const svgEl = byId('graph-svg', SVGSVGElement);
   svgSel = d3.select(svgEl);
   sceneSel = svgSel.select('#scene');
   sceneSel.selectAll('*').remove();
@@ -117,15 +120,13 @@ export function render(nodes, edges, initialAlpha = 0.8) {
     .append('g')
     .attr('class', 'node');
 
-  const isPlaceholder = (d) => Array.isArray(d.tags) && d.tags.includes('placeholder');
-
   nodeSel
     .append('circle')
     .attr('r', (d) => rScale(degreeMap[d.id] || 0))
-    .attr('fill', (d) => (isPlaceholder(d) ? 'transparent' : colorFor(d.entry_type)))
+    .attr('fill', (d) => (isVirtualNode(d) ? 'transparent' : colorFor(d.entry_type)))
     .attr('stroke', (d) => d3.color(colorFor(d.entry_type)).brighter(1).toString())
-    .attr('stroke-width', (d) => (isPlaceholder(d) ? 2 : 1))
-    .attr('stroke-dasharray', (d) => (isPlaceholder(d) ? '4 3' : null));
+    .attr('stroke-width', (d) => (isVirtualNode(d) ? 2 : 1))
+    .attr('stroke-dasharray', (d) => (isVirtualNode(d) ? '4 3' : null));
 
   const titleSel = nodeSel
     .append('text')
@@ -163,14 +164,14 @@ export function render(nodes, edges, initialAlpha = 0.8) {
       d3
         .forceLink(edges)
         .id((d) => d.id)
-        .distance(95)
+        .distance(95),
     )
     .force('charge', d3.forceManyBody().strength(-240))
     .force('x', d3.forceX(svgEl.clientWidth / 2).strength(0.05))
     .force('y', d3.forceY(svgEl.clientHeight / 2).strength(0.05))
     .force(
       'collide',
-      d3.forceCollide((d) => rScale(degreeMap[d.id] || 0) + 8)
+      d3.forceCollide((d) => rScale(degreeMap[d.id] || 0) + 8),
     )
     .on('tick', () => {
       edgeSel
@@ -237,7 +238,7 @@ export function clearHighlight() {
 
 export function resetView() {
   if (!svgSel || !zoom) return;
-  const svgEl = document.getElementById('graph-svg');
+  const svgEl = byId('graph-svg', SVGSVGElement);
   const w = svgEl.clientWidth;
   const h = svgEl.clientHeight;
   svgSel
@@ -248,7 +249,7 @@ export function resetView() {
       d3.zoomIdentity
         .translate(w / 2, h / 2)
         .scale(1)
-        .translate(-w / 2, -h / 2)
+        .translate(-w / 2, -h / 2),
     );
 }
 
@@ -256,7 +257,7 @@ export function panZoomToNode(nodeId) {
   if (!svgSel || !zoom) return;
   const node = state.allNodes.find((n) => n.id === nodeId);
   if (!node || node.x == null) return;
-  const svgEl = document.getElementById('graph-svg');
+  const svgEl = byId('graph-svg', SVGSVGElement);
   const w = svgEl.clientWidth;
   const h = svgEl.clientHeight;
   const scale = 1.2;
@@ -265,7 +266,7 @@ export function panZoomToNode(nodeId) {
     .duration(450)
     .call(
       zoom.transform,
-      d3.zoomIdentity.translate(w / 2 - node.x * scale, h / 2 - node.y * scale).scale(scale)
+      d3.zoomIdentity.translate(w / 2 - node.x * scale, h / 2 - node.y * scale).scale(scale),
     );
 }
 

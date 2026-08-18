@@ -68,6 +68,7 @@ from core.schemas.entry import Entry, EntryMetadata, EntryType, RefinementStatus
 from core.storage.database import SessionLocal
 from core.storage.repository import EdgeRepository, EntryRepository
 
+
 def _default_memory_dir() -> Path:
     configured = os.environ.get("KDG_MEMORY_DIR")
     if configured:
@@ -77,6 +78,7 @@ def _default_memory_dir() -> Path:
 
 class MemSourceFormat(str, Enum):
     """Describes where / how a MemEntry was ingested."""
+
     manual = "manual"
     openai_messages = "openai_messages"
     langchain_messages = "langchain_messages"
@@ -133,6 +135,7 @@ class MemGraph:
         if graph is None and session_factory is None:
             try:
                 from core.app_state import graph as app_graph
+
                 graph = app_graph
             except Exception:
                 graph = None
@@ -291,9 +294,7 @@ class MemGraph:
         created: list[MemEntry] = []
 
         if as_single_trace:
-            lines = [
-                f"[{d['role']}] {d['content']}" for d in dicts if d["content"]
-            ]
+            lines = [f"[{d['role']}] {d['content']}" for d in dicts if d["content"]]
             entry = self._make_entry(
                 content="\n".join(lines),
                 tags=tags,
@@ -431,11 +432,7 @@ class MemGraph:
         if chunk_by == "line":
             chunks = [ln.strip() for ln in text.splitlines() if ln.strip()]
         elif chunk_by == "paragraph":
-            chunks = [
-                p.strip()
-                for p in text.split("\n\n")
-                if p.strip()
-            ]
+            chunks = [p.strip() for p in text.split("\n\n") if p.strip()]
         else:
             chunks = [text]
 
@@ -493,6 +490,7 @@ class MemGraph:
         factory = session_factory or SessionLocal
         with factory() as db:
             from core.storage.models import Base
+
             Base.metadata.create_all(bind=db.get_bind())
             sessions = {
                 _memory_data(entry).get("session_id")
@@ -502,7 +500,9 @@ class MemGraph:
         sessions.discard(None)
 
         # Include legacy sessions so callers can discover and trigger import.
-        directory = Path(storage_dir).expanduser().resolve() if storage_dir else _default_memory_dir()
+        directory = (
+            Path(storage_dir).expanduser().resolve() if storage_dir else _default_memory_dir()
+        )
         if directory.exists():
             sessions.update(p.stem for p in directory.glob("*.json"))
         return sorted(str(session) for session in sessions)
@@ -557,10 +557,7 @@ class MemGraph:
                 and (edge.source_id in session_ids or edge.target_id in session_ids)
             ]
         if mem_id is not None:
-            edges = [
-                edge for edge in edges
-                if edge.source_id == mem_id or edge.target_id == mem_id
-            ]
+            edges = [edge for edge in edges if edge.source_id == mem_id or edge.target_id == mem_id]
         return edges
 
 
@@ -568,16 +565,14 @@ class MemGraph:
 # Internal helpers
 # ------------------------------------------------------------------
 
+
 def _extract_content(m: Any) -> str:
     """Pull text content out of a message dict or object."""
     if isinstance(m, dict):
         content = m.get("content", "")
         if isinstance(content, list):
             # OpenAI vision-style: content is a list of parts
-            parts = [
-                p.get("text", "") if isinstance(p, dict) else str(p)
-                for p in content
-            ]
+            parts = [p.get("text", "") if isinstance(p, dict) else str(p) for p in content]
             return " ".join(p for p in parts if p).strip()
         return str(content).strip()
     if hasattr(m, "content"):
@@ -620,7 +615,9 @@ def _entry_to_mem(entry: Entry) -> MemEntry:
 
 
 def _mem_to_entry(mem: MemEntry) -> Entry:
-    first_line = next((line.strip("# ").strip() for line in mem.content.splitlines() if line.strip()), "")
+    first_line = next(
+        (line.strip("# ").strip() for line in mem.content.splitlines() if line.strip()), ""
+    )
     title = first_line[:80] or f"Memory {mem.id[:8]}"
     return Entry(
         id=mem.id,

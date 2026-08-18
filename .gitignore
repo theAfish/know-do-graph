@@ -1,12 +1,37 @@
+# Local environment and secrets
 .env
+.env.*
+!.env.example
 .venv/
-dist/
+venv/
+ENV/
+
+# Python caches and test/tool output
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+frontend/dist/*
+!frontend/dist/.gitkeep
+frontend/node_modules/
+
+# Local databases and generated runtime data
 data/*.db
+data/*.sqlite
+data/*.sqlite3
 *.db-shm
 *.db-wal
 
+# Local tool state
 .debug
 .agents
 .codex

@@ -29,8 +29,7 @@ body {
   overflow: hidden;
   background:
     radial-gradient(circle at 30% 20%, rgba(88, 166, 255, 0.04), transparent 60%),
-    radial-gradient(circle at 80% 80%, rgba(137, 87, 229, 0.04), transparent 55%),
-    var(--bg-1);
+    radial-gradient(circle at 80% 80%, rgba(137, 87, 229, 0.04), transparent 55%), var(--bg-1);
 }
 
 #graph-svg {
@@ -66,7 +65,9 @@ body {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  transition: width var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  transition:
+    width var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
 }
 #detail.hidden {
   width: 0;

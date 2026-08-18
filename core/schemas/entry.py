@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from core.utils.slug import slug_from_title
 
 
 class RemoteSource(BaseModel):
@@ -16,17 +18,18 @@ class RemoteSource(BaseModel):
     The identity of the node (id, slug, title, wikilinks-pointing-at-it) is
     intentionally NOT touched by the sync — only the body is refreshed.
     """
+
     kind: Literal["github", "http"] = "github"
     # Display URL (e.g. https://github.com/owner/repo or https://github.com/owner/repo/blob/ref/path)
     url: str
     # For kind="github": owner/repo and path-in-repo.
     owner: Optional[str] = None
     repo: Optional[str] = None
-    ref: str = "main"          # branch / tag / commit
+    ref: str = "main"  # branch / tag / commit
     path: Optional[str] = None  # e.g. "skills/extractor/SKILL.md"
     # Cache / change-detection
-    content_hash: Optional[str] = None   # sha256 of last-fetched body
-    etag: Optional[str] = None           # GitHub blob sha or HTTP ETag
+    content_hash: Optional[str] = None  # sha256 of last-fetched body
+    etag: Optional[str] = None  # GitHub blob sha or HTTP ETag
     fetched_at: Optional[datetime] = None
     status: Literal["ok", "stale", "error", "never"] = "never"
     last_error: Optional[str] = None
@@ -38,6 +41,8 @@ class RemoteSource(BaseModel):
 class EntryType(str, Enum):
     capability = "capability"
     procedure = "procedure"
+    # Legacy public types are accepted for compatibility and normalized to one
+    # of the four canonical knowledge-node types on Entry construction.
     workflow = "workflow"
     tool = "tool"
     repository = "repository"
@@ -45,11 +50,55 @@ class EntryType(str, Enum):
     dependency = "dependency"
     data = "data"
     analytical = "analytical"
+    # Internal/transient memory traces remain distinct so MemGraph and review
+    # policy internals can keep excluding raw session memory.
     memory = "memory"
     # Hierarchical-memory layers (see SkillLevel).
-    heuristic = "heuristic"   # L3: operational experience / empirical guidance
-    constraint = "constraint" # L4: known failure modes / limitations
+    heuristic = "heuristic"  # L3: operational experience / empirical guidance
+    constraint = "constraint"  # L4: known failure modes / limitations
     generic = "generic"
+
+
+CANONICAL_ENTRY_TYPES = (
+    EntryType.capability,
+    EntryType.procedure,
+    EntryType.heuristic,
+    EntryType.constraint,
+)
+
+PUBLIC_ENTRY_TYPE_VALUES = tuple(entry_type.value for entry_type in CANONICAL_ENTRY_TYPES)
+
+LEGACY_ENTRY_TYPE_TO_CANONICAL: dict[str, EntryType] = {
+    "capability": EntryType.capability,
+    "procedure": EntryType.procedure,
+    "heuristic": EntryType.heuristic,
+    "constraint": EntryType.constraint,
+    "workflow": EntryType.capability,
+    "tool": EntryType.procedure,
+    "repository": EntryType.procedure,
+    "data": EntryType.procedure,
+    "environment": EntryType.constraint,
+    "dependency": EntryType.constraint,
+    "analytical": EntryType.heuristic,
+    "generic": EntryType.capability,
+}
+
+
+def canonical_entry_type(entry_type: "EntryType | str | None") -> EntryType:
+    """Return the canonical public type for a requested entry type."""
+    value = entry_type.value if isinstance(entry_type, EntryType) else (entry_type or "capability")
+    if value == EntryType.memory.value:
+        return EntryType.memory
+    return LEGACY_ENTRY_TYPE_TO_CANONICAL.get(str(value), EntryType.capability)
+
+
+def legacy_entry_subtype(entry_type: "EntryType | str | None") -> str | None:
+    """Return the pre-normalization subtype when it carries extra detail."""
+    value = entry_type.value if isinstance(entry_type, EntryType) else (entry_type or "")
+    canonical = canonical_entry_type(value)
+    if value and value != canonical.value and value != EntryType.memory.value:
+        return str(value)
+    return None
 
 
 class SkillLevel(str, Enum):
@@ -65,6 +114,7 @@ class SkillLevel(str, Enum):
     so that, e.g., a ``procedure`` and a ``workflow`` can both be tagged L2,
     and an L3 ``heuristic`` can be attached to either.
     """
+
     L1 = "L1"
     L2 = "L2"
     L3 = "L3"
@@ -75,14 +125,16 @@ class SkillLevel(str, Enum):
 # and by progressive retrieval when ``skill_level`` is not set explicitly.
 DEFAULT_LEVEL_FOR_TYPE: dict[str, SkillLevel] = {
     "capability": SkillLevel.L1,
-    "workflow": SkillLevel.L1,
     "procedure": SkillLevel.L2,
     "heuristic": SkillLevel.L3,
     "constraint": SkillLevel.L4,
+    "memory": SkillLevel.L3,
 }
 
 
-def implied_level(entry_type: "EntryType | str | None", explicit: "SkillLevel | None") -> "SkillLevel | None":
+def implied_level(
+    entry_type: "EntryType | str | None", explicit: "SkillLevel | None"
+) -> "SkillLevel | None":
     """Return the effective skill level for an entry.
 
     Prefers an explicit metadata tag; otherwise falls back to the default
@@ -111,6 +163,7 @@ class VerificationStatus(str, Enum):
     bugged       — known broken; needs fix.
     deprecated   — superseded; do not use.
     """
+
     unverified = "unverified"
     self_tested = "self_tested"
     peer_reviewed = "peer_reviewed"
@@ -120,8 +173,8 @@ class VerificationStatus(str, Enum):
 
 
 class EntryMetadata(BaseModel):
-    # Disabled entries are retained in storage but are intentionally omitted
-    # from normal lookups, retrieval, and graph traversal.
+    # Disabled entries remain persisted, but are excluded from ordinary
+    # retrieval and the in-memory traversal graph.
     disabled: bool = False
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source_provenance: Optional[str] = None
@@ -142,6 +195,9 @@ class EntryMetadata(BaseModel):
     # use ``implied_level(entry_type, skill_level)`` to derive it from the
     # entry_type via DEFAULT_LEVEL_FOR_TYPE.
     skill_level: Optional[SkillLevel] = None
+    # Previous or more specific type label when a legacy public type has been
+    # collapsed into the four canonical public types.
+    subtype: Optional[str] = None
     # Free-form metadata for L3 heuristics / L4 constraints:
     #   {domain: str, confidence: float, papers: [str], notes: str, ...}
     applicability: dict = Field(default_factory=dict)
@@ -156,10 +212,11 @@ class EntryMetadata(BaseModel):
     def _default_verification(cls, v):
         # Tolerate legacy rows where verification_status was stored as null.
         return VerificationStatus.unverified if v is None else v
+
     # Script-specific metadata
-    script_language: Optional[str] = None      # e.g. "python", "bash", "julia"
+    script_language: Optional[str] = None  # e.g. "python", "bash", "julia"
     script_requirements: list[str] = Field(default_factory=list)  # pip/conda packages
-    script_filename: Optional[str] = None      # suggested filename for download
+    script_filename: Optional[str] = None  # suggested filename for download
     related_environments: list[str] = Field(default_factory=list)
     runtime_requirements: list[str] = Field(default_factory=list)
     external_refs: list[str] = Field(default_factory=list)
@@ -185,6 +242,7 @@ class ScriptAttachment(BaseModel):
     Kept for backward compatibility — internally these are mirrored into the
     generalised :class:`NodeAsset` list with ``folder="scripts"``.
     """
+
     filename: str
     language: str = "python"
     content: str
@@ -238,10 +296,11 @@ class NodeAsset(BaseModel):
     External agents can address assets as ``[entry-slug]/[folder]/[filename]``
     via ``GET /entries/{id}/assets/{folder}/{filename}``.
     """
+
     folder: str = ASSET_FOLDER_NOTES
     filename: str
     kind: str = "file"  # "file" | "link" | "text"
-    content: str = ""    # body for file/text; URL for link
+    content: str = ""  # body for file/text; URL for link
     language: Optional[str] = None
     mime_type: Optional[str] = None
     description: str = ""
@@ -276,9 +335,9 @@ class Entry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     slug: str = ""
-    # Native KDG uses ``EntryType``. Custom graphs may define any non-empty
-    # string type (for example ``category`` or ``parameter``).
-    entry_type: EntryType | str = EntryType.generic
+    # Native Know-Do Graphs use EntryType; custom graph databases may retain
+    # their own non-empty type labels.
+    entry_type: EntryType | str = EntryType.capability
     content: str = ""
     tags: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
@@ -287,22 +346,35 @@ class Entry(BaseModel):
     scripts: list[ScriptAttachment] = Field(default_factory=list)
     assets: list[NodeAsset] = Field(default_factory=list)
 
-    @field_validator("entry_type", mode="after")
+    @model_validator(mode="before")
     @classmethod
-    def _normalise_entry_type(cls, value: EntryType | str) -> EntryType | str:
-        if isinstance(value, EntryType):
-            return value
-        normalized = str(value).strip()
-        if not normalized:
-            return EntryType.generic
-        try:
-            return EntryType(normalized)
-        except ValueError:
-            return normalized
+    def _normalize_public_type(cls, data):
+        if not isinstance(data, dict):
+            return data
+        raw_type = data.get("entry_type", EntryType.capability.value)
+        raw_value = raw_type.value if isinstance(raw_type, EntryType) else str(raw_type).strip()
+        if raw_value and raw_value not in {entry_type.value for entry_type in EntryType}:
+            data = dict(data)
+            data["entry_type"] = raw_value
+            return data
+        subtype = legacy_entry_subtype(raw_type)
+        canonical = canonical_entry_type(raw_type)
+        data = dict(data)
+        data["entry_type"] = canonical
+        if subtype:
+            metadata = data.get("metadata") or {}
+            if isinstance(metadata, EntryMetadata):
+                if metadata.subtype is None:
+                    metadata = metadata.model_copy(update={"subtype": subtype})
+            elif isinstance(metadata, dict):
+                metadata = dict(metadata)
+                metadata.setdefault("subtype", subtype)
+            data["metadata"] = metadata
+        return data
 
     def model_post_init(self, __context: object) -> None:
         if not self.slug:
-            self.slug = _slug_from_title(self.title)
+            self.slug = slug_from_title(self.title)
         extracted = _extract_wikilinks(self.content)
         combined = list(dict.fromkeys(self.internal_refs + extracted))
         self.internal_refs = combined
@@ -330,15 +402,17 @@ class Entry(BaseModel):
         """
         if not self.assets and self.scripts:
             for s in self.scripts:
-                self.assets.append(NodeAsset(
-                    folder=ASSET_FOLDER_SCRIPTS,
-                    filename=s.filename,
-                    kind="file",
-                    content=s.content,
-                    language=s.language,
-                    requirements=list(s.requirements),
-                    description=s.description,
-                ))
+                self.assets.append(
+                    NodeAsset(
+                        folder=ASSET_FOLDER_SCRIPTS,
+                        filename=s.filename,
+                        kind="file",
+                        content=s.content,
+                        language=s.language,
+                        requirements=list(s.requirements),
+                        description=s.description,
+                    )
+                )
         # Derived view — always rebuilt from canonical assets.
         self.scripts = [
             ScriptAttachment(
@@ -368,10 +442,8 @@ class Entry(BaseModel):
 
 
 def entry_type_value(entry_type: EntryType | str | None) -> str:
-    """Return a stored/displayable node type for native and custom graphs."""
-    if hasattr(entry_type, "value"):
-        return str(entry_type.value)
-    return str(entry_type or EntryType.generic.value)
+    """Return the stored/displayable type for native and custom graphs."""
+    return entry_type.value if isinstance(entry_type, EntryType) else str(entry_type or EntryType.capability.value)
 
 
 # Scientific symbols that should become descriptive words, not their Latin
@@ -389,8 +461,9 @@ _CHAR_SUBS: dict[str, str] = {
 }
 
 
-def _slug_from_title(title: str) -> str:
+def _legacy_slug_from_title(title: str) -> str:
     import unicodedata
+
     # Pre-substitute scientific symbols that have misleading NFKD decompositions.
     for sym, replacement in _CHAR_SUBS.items():
         title = title.replace(sym, f" {replacement} ")

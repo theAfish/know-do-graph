@@ -26,11 +26,14 @@ from typing import Any, Callable
 from openai import OpenAI
 
 from agents.review_agent.tools import (
-    MEMORY_REVIEW_TOOL_DISPATCH,
     MEMORY_REVIEW_TOOL_SCHEMAS,
-    REVIEW_TOOL_DISPATCH,
     REVIEW_TOOL_SCHEMAS,
 )
+from agents.review_agent.tools.registry import (
+    MEMORY_REVIEW_TOOL_REGISTRY,
+    REVIEW_TOOL_REGISTRY,
+)
+from agents.tooling import ToolRegistry, normalize_tool_result
 from core.graph.graph import KnowDoGraph
 from know_do_graph.review import ReviewPolicy
 
@@ -152,15 +155,14 @@ class ReviewAgent:
 
     def run_review(self, instructions: str = "") -> str:
         """Run one review session and return a summary of findings and fixes."""
-        user_msg = (
-            f"Please review a batch of {self._batch_size} nodes. "
-            + (instructions if instructions else "Apply all quality criteria from your instructions.")
+        user_msg = f"Please review a batch of {self._batch_size} nodes. " + (
+            instructions if instructions else "Apply all quality criteria from your instructions."
         )
         history: list[dict] = [
             {"role": "system", "content": self._policy_prompt()},
             {"role": "user", "content": user_msg},
         ]
-        return self._run_loop(history, tools=self._review_tools())
+        return self._run_loop(history, tools=self._review_tools(), dispatch=REVIEW_TOOL_REGISTRY)
 
     def review_nodes(self, instructions: str = "") -> dict:
         """Run a policy-controlled review and return structured progress/results."""
@@ -266,7 +268,7 @@ class ReviewAgent:
         sampled = self._dispatch(
             "sample_memory_nodes",
             json.dumps({"batch_size": self._batch_size, "session_id": session_id}),
-            dispatch=MEMORY_REVIEW_TOOL_DISPATCH,
+            dispatch=MEMORY_REVIEW_TOOL_REGISTRY,
         )
         if isinstance(sampled, dict) and sampled.get("error"):
             status = {
@@ -330,14 +332,12 @@ class ReviewAgent:
         summary = self._run_loop(
             history,
             tools=memory_tools,
-            dispatch=MEMORY_REVIEW_TOOL_DISPATCH,
+            dispatch=MEMORY_REVIEW_TOOL_REGISTRY,
             observe_result=observe,
         )
         status["summary"] = summary
         if status["progress"]["completed"] < status["progress"]["total"]:
-            status["errors"].append(
-                "Review ended before every sampled memory received a decision."
-            )
+            status["errors"].append("Review ended before every sampled memory received a decision.")
         status["status"] = "completed" if not status["errors"] else "completed_with_errors"
         self._emit_status(status)
         return status
@@ -351,7 +351,7 @@ class ReviewAgent:
         history: list[dict],
         *,
         tools: list[dict] = REVIEW_TOOL_SCHEMAS,
-        dispatch: dict[str, Any] = REVIEW_TOOL_DISPATCH,
+        dispatch: dict[str, Any] | ToolRegistry = REVIEW_TOOL_REGISTRY,
         observe_result: Callable[[str, Any], None] | None = None,
     ) -> str:
         MAX_ITERATIONS = 30
@@ -374,7 +374,11 @@ class ReviewAgent:
 
             for tc in message.tool_calls:
                 try:
-                    display_args = {k: v for k, v in json.loads(tc.function.arguments or "{}").items() if k != "graph"}
+                    display_args = {
+                        k: v
+                        for k, v in json.loads(tc.function.arguments or "{}").items()
+                        if k != "graph"
+                    }
                 except Exception:
                     display_args = {}
                 if self._on_step:
@@ -406,22 +410,28 @@ class ReviewAgent:
         name: str,
         arguments_json: str,
         *,
-        dispatch: dict[str, Any] = REVIEW_TOOL_DISPATCH,
+        dispatch: dict[str, Any] | ToolRegistry = REVIEW_TOOL_REGISTRY,
     ) -> Any:
-        func = dispatch.get(name)
+        dispatch_map = dispatch.dispatch if isinstance(dispatch, ToolRegistry) else dispatch
+        func = dispatch_map.get(name)
         if func is None:
-            return {"error": f"Unknown tool: {name}"}
+            return {"ok": False, "error": f"Unknown tool: {name}"}
         try:
-            kwargs = json.loads(arguments_json) if arguments_json else {}
+            if isinstance(dispatch, ToolRegistry):
+                kwargs = dispatch.parse_arguments(arguments_json)
+            else:
+                kwargs = json.loads(arguments_json) if arguments_json else {}
         except json.JSONDecodeError as exc:
-            return {"error": f"Bad arguments JSON: {exc}"}
+            return {"ok": False, "error": f"Bad arguments JSON: {exc}"}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
         kwargs["graph"] = self._graph
         if "policy" in inspect.signature(func).parameters:
             kwargs["policy"] = self._policy
         try:
-            return func(**kwargs)
+            return normalize_tool_result(func(**kwargs))
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)}
+            return {"ok": False, "error": str(exc)}
 
     def _emit_status(self, status: dict) -> None:
         snapshot = json.loads(json.dumps(status, default=str))

@@ -99,7 +99,7 @@ def sample_nodes_for_review(
         raise ValueError("strategy must be 'seed', 'global', or 'auto'")
 
     if normalized == "global":
-        degree = dict(g._g.degree())  # type: ignore[attr-defined]
+        degree = g.degree_map()
         selected = sorted(
             candidates,
             key=lambda entry: (
@@ -315,16 +315,14 @@ def distill_memory(
             SkillLevel.L4: EntryType.constraint,
         }
         allowed_types = {
-            SkillLevel.L1: {EntryType.capability, EntryType.workflow},
+            SkillLevel.L1: {EntryType.capability},
             SkillLevel.L2: {EntryType.procedure},
             SkillLevel.L3: {EntryType.heuristic},
             SkillLevel.L4: {EntryType.constraint},
         }
         try:
             distilled_type = (
-                EntryType(entry_type)
-                if entry_type is not None
-                else default_type_for_level[level]
+                EntryType(entry_type) if entry_type is not None else default_type_for_level[level]
             )
         except ValueError:
             return {"error": f"Unsupported entry_type: {entry_type}"}
@@ -345,9 +343,7 @@ def distill_memory(
             }:
                 return {"error": "L3/L4 memory must target an existing L1 or L2 node."}
             relation = (
-                EdgeRelation.heuristic_for
-                if level == SkillLevel.L3
-                else EdgeRelation.constraint_on
+                EdgeRelation.heuristic_for if level == SkillLevel.L3 else EdgeRelation.constraint_on
             )
 
         distilled = Entry(
@@ -457,7 +453,9 @@ def inspect_node(identifier: str, graph: Any = None) -> dict:
         "status": entry.metadata.refinement_status.value,
         "review_count": entry.metadata.review_count,
         "modify_count": entry.metadata.modify_count,
-        "last_reviewed_at": entry.metadata.last_reviewed_at.isoformat() if entry.metadata.last_reviewed_at else None,
+        "last_reviewed_at": entry.metadata.last_reviewed_at.isoformat()
+        if entry.metadata.last_reviewed_at
+        else None,
         "neighbors": neighbor_details,
     }
 
@@ -614,10 +612,10 @@ def merge_entries(
     policy: Any = None,
 ) -> dict:
     """Merge duplicate into primary, then mark primary as modified."""
+    from agents.graph_agent.tools import merge_entries as _merge_entries
     from core import app_state
     from core.retrieval.retrieval import RetrievalEngine
     from core.storage.database import SessionLocal
-    from agents.graph_agent.tools import merge_entries as _merge_entries
 
     policy = _policy_or_default(policy)
     g = graph or app_state.graph
@@ -639,16 +637,16 @@ def merge_entries(
         merge_aliases=merge_aliases,
         merge_tags=merge_tags,
         graph=g,
-        mutation_validator=lambda entry: _mutation_error(
-            entry, "merge_similar", policy
-        ),
+        mutation_validator=lambda entry: _mutation_error(entry, "merge_similar", policy),
     )
     if result.get("merged"):
         mark_reviewed(result["primary_id"], was_modified=True, graph=g, policy=policy)
     return result
 
 
-def search_entries(query: str, limit: int = 10, mode: str = "hybrid", graph: Any = None) -> list[dict]:
+def search_entries(
+    query: str, limit: int = 10, mode: str = "hybrid", graph: Any = None
+) -> list[dict]:
     """Hybrid semantic + keyword search — use to find duplicate or related candidates."""
     from agents.graph_agent.tools import search_entries as _search_entries
 
@@ -669,7 +667,9 @@ def create_edge(
         return {"error": "Review action 'link' is not permitted by policy."}
     from agents.graph_agent.tools import create_edge as _create_edge
 
-    return _create_edge(source_id=source_id, target_id=target_id, relation=relation, weight=weight, graph=graph)
+    return _create_edge(
+        source_id=source_id, target_id=target_id, relation=relation, weight=weight, graph=graph
+    )
 
 
 def delete_edge(edge_id: str, graph: Any = None, policy: Any = None) -> dict:
@@ -732,7 +732,11 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "batch_size": {"type": "integer", "default": 5, "description": "Number of nodes to sample"},
+                    "batch_size": {
+                        "type": "integer",
+                        "default": 5,
+                        "description": "Number of nodes to sample",
+                    },
                 },
             },
         },
@@ -793,8 +797,12 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
                     "content": {"type": "string"},
                     "entry_type": {
                         "type": "string",
-                        "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "generic"],
+                        "enum": [
+                            "capability",
+                            "procedure",
+                            "heuristic",
+                            "constraint",
+                        ],
                     },
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "aliases": {"type": "array", "items": {"type": "string"}},
@@ -904,10 +912,26 @@ REVIEW_TOOL_SCHEMAS: list[dict] = [
                     "target_id": {"type": "string"},
                     "relation": {
                         "type": "string",
-                        "enum": ["dependency", "compatible_with", "alternative_to", "related_workflow",
-                                 "generated_from", "memory_of", "related_memory", "refinement_of", "derived_from",
-                                 "warning_about", "cited_by", "wikilink", "prerequisite", "replacement",
-                                 "execution_pathway", "transformation", "provenance", "compatibility"],
+                        "enum": [
+                            "dependency",
+                            "compatible_with",
+                            "alternative_to",
+                            "related_workflow",
+                            "generated_from",
+                            "memory_of",
+                            "related_memory",
+                            "refinement_of",
+                            "derived_from",
+                            "warning_about",
+                            "cited_by",
+                            "wikilink",
+                            "prerequisite",
+                            "replacement",
+                            "execution_pathway",
+                            "transformation",
+                            "provenance",
+                            "compatibility",
+                        ],
                     },
                     "weight": {"type": "number", "default": 1.0},
                 },
@@ -1005,10 +1029,9 @@ MEMORY_REVIEW_TOOL_SCHEMAS: list[dict] = [
                     },
                     "entry_type": {
                         "type": "string",
-                        "enum": ["capability", "workflow", "procedure", "heuristic", "constraint"],
+                        "enum": ["capability", "procedure", "heuristic", "constraint"],
                         "description": (
-                            "Optional concrete node type. L1 allows capability/workflow; "
-                            "other levels have one matching type."
+                            "Optional canonical node type. Each L1-L4 level has one matching type."
                         ),
                     },
                     "title": {"type": "string"},

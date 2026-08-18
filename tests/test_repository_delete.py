@@ -29,9 +29,7 @@ class EntryRepositoryDeleteTests(unittest.TestCase):
 
                 edges.create(Edge(source_id=deleted_node.id, target_id=neighbor.id))
                 edges.create(Edge(source_id=neighbor.id, target_id=deleted_node.id))
-                unrelated = edges.create(
-                    Edge(source_id=other_source.id, target_id=other_target.id)
-                )
+                unrelated = edges.create(Edge(source_id=other_source.id, target_id=other_target.id))
 
                 self.assertTrue(entries.delete(deleted_node.id))
                 remaining = edges.get_all()

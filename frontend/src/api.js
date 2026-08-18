@@ -1,6 +1,7 @@
 // Same-origin in prod (FastAPI serves dist) and in dev (Vite proxy).
 const API_BASE = '';
 
+/** @returns {Promise<unknown>} */
 async function jget(path) {
   const r = await fetch(`${API_BASE}${path}`);
   if (!r.ok) throw new Error(await errorMessage(r));
@@ -29,41 +30,32 @@ async function jrequest(path, options) {
 }
 
 export const api = {
-  getFullGraph: (options = {}) => {
-    const params = new URLSearchParams();
-    Object.entries(options).forEach(([key, value]) => {
-      if (value != null) params.set(key, String(value));
-    });
-    const suffix = params.size ? `?${params}` : '';
-    return jget(`/graph/full${suffix}`);
-  },
-  searchGraph: (options = {}) => {
-    const params = new URLSearchParams();
-    Object.entries(options).forEach(([key, value]) => {
-      if (value != null && value !== '') params.set(key, String(value));
-    });
-    return jget(`/graph/search?${params}`);
-  },
-  getGraphDataset: () => jget('/graph/dataset'),
-  getHierarchy: (nodeId, { targetLevel, maxNodes = 600 } = {}) => {
-    const params = new URLSearchParams({ max_nodes: String(maxNodes) });
-    if (targetLevel != null) params.set('target_level', String(targetLevel));
-    return jget(`/graph/hierarchy/${encodeURIComponent(nodeId)}?${params}`);
-  },
+  /** @returns {Promise<import('./types.js').GraphPayload>} */
+  getFullGraph: () => jget('/graph/full'),
+  /** @param {string} id @returns {Promise<import('./types.js').GraphNode>} */
   getEntry: (id) => jget(`/entries/${id}`),
+  /**
+   * @param {string} id
+   * @param {import('./types.js').GraphNode} entry
+   * @returns {Promise<import('./types.js').GraphNode>}
+   */
   updateEntry: (id, entry) =>
     jrequest(`/entries/${encodeURIComponent(id)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(entry),
     }),
-  deleteEntry: (id) =>
-    jrequest(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  searchEntries: ({ q, type, limit = 200, includeScores = true }) => {
+  deleteEntry: (id) => jrequest(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /**
+   * @param {{q: string, type?: string, limit?: number, includeScores?: boolean}} options
+   * @returns {Promise<import('./types.js').GraphNode[]>}
+   */
+  searchEntries: async ({ q, type, limit = 200, includeScores = true }) => {
     const params = new URLSearchParams({ q, limit: String(limit) });
     if (includeScores) params.set('include_scores', 'true');
     if (type) params.set('entry_type', type);
-    return jget(`/entries/search?${params}`);
+    const data = await jget(`/entries/search?${params}`);
+    return Array.isArray(data) ? data : data.items;
   },
   scriptDownloadUrl: (entryId, filename) =>
     `${API_BASE}/entries/${entryId}/scripts/${encodeURIComponent(filename)}`,

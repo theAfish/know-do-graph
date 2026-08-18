@@ -14,62 +14,28 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from openai import OpenAI
 
+from agents.graph_agent.tools.registry import (
+    GRAPH_TOOL_REGISTRY,
+    MUTATING_TOOLS,
+    READ_ONLY_TOOLS,
+)
 from core import events as _events
 from core.graph.graph import KnowDoGraph
-from agents.graph_agent.tools import TOOL_DISPATCH, TOOL_SCHEMAS
 
 _DEFAULT_MODEL = "qwen-plus"
 
 # Tool calls that mutate the graph; the frontend is notified via SSE so it
 # can refresh after each such call.
-_MUTATING_TOOLS: set[str] = {
-    "create_entry",
-    "update_entry",
-    "delete_entry",
-    "create_edge",
-    "delete_edge",
-    "merge_entries",
-    "resolve_wikilinks",
-    "remove_dangling_edges",
-    "create_script_entry",
-    "add_script_to_entry",
-    "attach_script_to_entry",
-    "add_asset_to_entry",
-    "build_material_interface_workflow",
-    "create_material_entry",
-    "submit_feedback",
-    "create_heuristic",
-    "create_constraint",
-    "decompose_capability",
-}
+_MUTATING_TOOLS: set[str] = set(MUTATING_TOOLS)
 
 # Read-only tools exposed when the agent is instantiated in query-only mode.
 # Mutating tools are excluded so external agents can query the graph without
 # accidentally writing nodes or edges.
-_READ_ONLY_TOOLS: set[str] = {
-    "get_entry",
-    "search_entries",
-    "list_entries",
-    "get_neighbors",
-    "graph_stats",
-    "fetch_url",
-    "web_search",
-    "find_similar_nodes",
-    "get_graph_overview",
-    "list_nodes_by_type",
-    "get_script",
-    "list_scripts",
-    "list_assets",
-    "list_by_verification",
-    "list_needs_generalization",
-    "retrieve_plan",
-    "retrieve_heuristics",
-    "retrieve_constraints",
-}
+_READ_ONLY_TOOLS: set[str] = set(READ_ONLY_TOOLS)
 
 _READ_ONLY_SYSTEM_PROMPT = """You are a read-only knowledge-graph query assistant for the Know-Do Graph system.
 
@@ -272,10 +238,8 @@ class GraphAgent:
         self._history: list[dict] = [{"role": "system", "content": system_prompt}]
         self._on_step = on_step
         # Filter tool schemas to read-only set when in query-only mode
-        self._tool_schemas = (
-            [s for s in TOOL_SCHEMAS if s["function"]["name"] in _READ_ONLY_TOOLS]
-            if read_only
-            else TOOL_SCHEMAS
+        self._tool_schemas = GRAPH_TOOL_REGISTRY.schema_list(
+            allowed_tools=_READ_ONLY_TOOLS if read_only else None
         )
 
     # ------------------------------------------------------------------
@@ -322,7 +286,11 @@ class GraphAgent:
             # Execute each tool call and collect results
             for tc in message.tool_calls:
                 try:
-                    display_args = {k: v for k, v in json.loads(tc.function.arguments or "{}").items() if k != "graph"}
+                    display_args = {
+                        k: v
+                        for k, v in json.loads(tc.function.arguments or "{}").items()
+                        if k != "graph"
+                    }
                 except Exception:
                     display_args = {}
                 if self._on_step:
@@ -347,22 +315,13 @@ class GraphAgent:
         """Call the named tool with the provided JSON arguments."""
         # Guard: in read-only mode, reject any mutating tool that somehow slips through
         if self._read_only and name in _MUTATING_TOOLS:
-            return {"error": f"Tool '{name}' is not available in read-only mode."}
+            return {"ok": False, "error": f"Tool '{name}' is not available in read-only mode."}
 
-        func = TOOL_DISPATCH.get(name)
-        if func is None:
-            return {"error": f"Unknown tool: {name}"}
-        try:
-            kwargs = json.loads(arguments_json) if arguments_json else {}
-        except json.JSONDecodeError as exc:
-            return {"error": f"Bad arguments JSON: {exc}"}
-
-        # Inject the live graph instance into every call
-        kwargs["graph"] = self._graph
-        try:
-            result = func(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)}
+        result = GRAPH_TOOL_REGISTRY.call(
+            name,
+            arguments_json,
+            extra_kwargs={"graph": self._graph},
+        )
 
         # Broadcast a refresh hint so connected frontends re-fetch the graph.
         if name in _MUTATING_TOOLS:

@@ -7,9 +7,10 @@ variable which is set once by ``GraphAgent.__init__``.
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any, Callable
+
+from core.utils.slug import slug_from_title
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -17,19 +18,16 @@ from typing import Any, Callable
 
 
 def _slug(title: str) -> str:
-    slug = title.lower().strip()
-    slug = re.sub(r"[^\w\s-]", "", slug)
-    slug = re.sub(r"[\s_]+", "-", slug)
-    return re.sub(r"-+", "-", slug).strip("-")
+    return slug_from_title(title)
 
 
 # Tokens that suggest a title is a *concrete instance* of a more general skill
 # (chemical formulas, two-formula interfaces, "build X molecule", etc.).
 # Used by create_entry's soft abstraction check.
 _CONCRETE_INSTANCE_PATTERNS = [
-    re.compile(r"\b[A-Z][a-zA-Z]*\d+[A-Za-z]*\d*\b"),         # CH4, H2O, TiO2, SrTiO3
-    re.compile(r"\b[A-Z][A-Za-z0-9]+/[A-Z][A-Za-z0-9]+\b"),   # TiO2/SrTiO3
-    re.compile(r"^build\s+[A-Z][a-zA-Z]*\d+"),                # "Build H2O" (formula must contain a digit)
+    re.compile(r"\b[A-Z][a-zA-Z]*\d+[A-Za-z]*\d*\b"),  # CH4, H2O, TiO2, SrTiO3
+    re.compile(r"\b[A-Z][A-Za-z0-9]+/[A-Z][A-Za-z0-9]+\b"),  # TiO2/SrTiO3
+    re.compile(r"^build\s+[A-Z][a-zA-Z]*\d+"),  # "Build H2O" (formula must contain a digit)
 ]
 
 
@@ -46,8 +44,8 @@ def _check_generalization(title: str, db: Any, graph: Any = None) -> dict:
     insensitive token overlap) — those are likely the generic ancestor or a
     near-duplicate.
     """
-    from core.retrieval.retrieval import RetrievalEngine
     from core import app_state
+    from core.retrieval.retrieval import RetrievalEngine
 
     engine = RetrievalEngine(db, graph or app_state.graph)
     candidates = engine.search_entries(query=title, limit=5)
@@ -80,27 +78,28 @@ def create_entry(
     response includes the similar candidates so the agent can decide to merge
     or rename instead.
     """
-    from core.schemas.entry import Entry, EntryMetadata, EntryType
+    from core import app_state
+    from core.schemas.entry import EntryMetadata
+    from core.services.entries import create_entry as service_create_entry
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
 
+    g = graph or app_state.graph
     with SessionLocal() as db:
-        check = _check_generalization(title, db, graph)
+        check = _check_generalization(title, db, g)
         meta = EntryMetadata(
             source_provenance=source_provenance,
             needs_generalization=check["needs_generalization"],
         )
-        entry = Entry(
+        saved = service_create_entry(
+            db,
+            g,
             title=title,
             content=content,
-            entry_type=EntryType(entry_type),
+            entry_type=entry_type,
             tags=tags or [],
             aliases=aliases or [],
             metadata=meta,
         )
-        saved = EntryRepository(db).create(entry)
-    if graph is not None:
-        graph.add_entry(saved)
     return {
         "id": saved.id,
         "slug": saved.slug,
@@ -121,47 +120,45 @@ def update_entry(
 ) -> dict:
     """Update fields on an existing entry."""
     from core import app_state
-    from core.retrieval.retrieval import RetrievalEngine
-    from core.schemas.entry import EntryType
+    from core.services.entries import update_entry as service_update_entry
+    from core.services.errors import ServiceError
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
 
     g = graph or app_state.graph
+    changes = {}
+    if title is not None:
+        changes["title"] = title
+    if content is not None:
+        changes["content"] = content
+    if entry_type is not None:
+        changes["entry_type"] = entry_type
+    if tags is not None:
+        changes["tags"] = tags
+    if aliases is not None:
+        changes["aliases"] = aliases
     with SessionLocal() as db:
-        engine = RetrievalEngine(db, g)
-        entry = engine.resolve_identifier(entry_id)
-        if entry is None:
+        try:
+            saved = service_update_entry(db, g, entry_id, **changes)
+        except ServiceError:
             return {"error": f"Entry '{entry_id}' not found."}
-        if title is not None:
-            entry.title = title
-        if content is not None:
-            entry.content = content
-            entry.refresh_refs()
-        if entry_type is not None:
-            entry.entry_type = EntryType(entry_type)
-        if tags is not None:
-            entry.tags = tags
-        if aliases is not None:
-            entry.aliases = aliases
-        saved = EntryRepository(db).update(entry)
-    if graph is not None and saved:
-        graph.add_entry(saved)  # upsert node attributes
-    return {"id": saved.id, "slug": saved.slug, "title": saved.title} if saved else {"error": "Update failed."}
+    return {"id": saved.id, "slug": saved.slug, "title": saved.title}
 
 
 def delete_entry(entry_id: str, graph: Any = None) -> dict:
     """Delete an entry (node) and its associated edges."""
+    from core import app_state
+    from core.services.entries import delete_entry as service_delete_entry
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
 
+    g = graph or app_state.graph
     with SessionLocal() as db:
-        deleted = EntryRepository(db).delete(entry_id)
-    if deleted and graph is not None:
-        graph.remove_entry(entry_id)
+        deleted = service_delete_entry(db, g, entry_id)
     return {"deleted": deleted, "entry_id": entry_id}
 
 
-def search_entries(query: str, limit: int = 10, mode: str = "hybrid", graph: Any = None) -> list[dict]:
+def search_entries(
+    query: str, limit: int = 10, mode: str = "hybrid", graph: Any = None
+) -> list[dict]:
     """Hybrid semantic + keyword search over entries."""
     from core import app_state
     from core.retrieval.retrieval import RetrievalEngine
@@ -214,8 +211,7 @@ def list_entries(limit: int = 20, graph: Any = None) -> list[dict]:
         engine = RetrievalEngine(db, g)
         entries = engine.list_entries(limit=limit)
     return [
-        {"id": e.id, "slug": e.slug, "title": e.title, "type": e.entry_type.value}
-        for e in entries
+        {"id": e.id, "slug": e.slug, "title": e.title, "type": e.entry_type.value} for e in entries
     ]
 
 
@@ -240,38 +236,41 @@ def create_edge(
     its arguments or create the missing node first. This prevents the ghost
     "grey" placeholder nodes that networkx would otherwise auto-create.
     """
-    from core.retrieval.retrieval import RetrievalEngine
-    from core.schemas.edge import Edge, EdgeRelation
+    from core import app_state
+    from core.services.edges import connect_entries
+    from core.services.errors import NotFoundError, ServiceError, ValidationServiceError
     from core.storage.database import SessionLocal
-    from core.storage.repository import EdgeRepository
 
     try:
-        rel = EdgeRelation(relation)
-    except ValueError:
-        rel = EdgeRelation.wikilink
-
-    with SessionLocal() as db:
-        engine = RetrievalEngine(db, graph)
-        src = engine.resolve_identifier(source_id)
-        tgt = engine.resolve_identifier(target_id)
+        g = graph or app_state.graph
+        with SessionLocal() as db:
+            saved = connect_entries(
+                db,
+                g,
+                source_id,
+                target_id,
+                relation=relation,
+                weight=weight,
+            )
+    except NotFoundError:
         missing = []
-        if src is None:
-            missing.append(source_id)
-        if tgt is None:
-            missing.append(target_id)
-        if missing:
-            return {
-                "error": "edge_endpoint_not_found",
-                "missing": missing,
-                "hint": "Resolve source_id and target_id to existing entries (use search_entries / get_entry) or call create_entry first.",
-            }
-        if src.id == tgt.id:
-            return {"error": "self_loop_rejected", "entry_id": src.id}
+        with SessionLocal() as db:
+            from core.retrieval.retrieval import RetrievalEngine
 
-        edge = Edge(source_id=src.id, target_id=tgt.id, relation=rel, weight=weight)
-        saved = EdgeRepository(db).create(edge)
-    if graph is not None:
-        graph.add_edge(saved)
+            engine = RetrievalEngine(db, graph or app_state.graph)
+            if engine.resolve_identifier(source_id) is None:
+                missing.append(source_id)
+            if engine.resolve_identifier(target_id) is None:
+                missing.append(target_id)
+        return {
+            "error": "edge_endpoint_not_found",
+            "missing": missing,
+            "hint": "Resolve source_id and target_id to existing entries (use search_entries / get_entry) or call create_entry first.",
+        }
+    except ValidationServiceError:
+        return {"error": "self_loop_rejected", "entry_id": source_id}
+    except ServiceError as exc:
+        return exc.to_dict()
     return {
         "id": saved.id,
         "source_id": saved.source_id,
@@ -282,19 +281,17 @@ def create_edge(
 
 def delete_edge(edge_id: str, graph: Any = None) -> dict:
     """Delete an edge by its ID."""
+    from core import app_state
+    from core.services.edges import delete_edge as service_delete_edge
+    from core.services.errors import ServiceError
     from core.storage.database import SessionLocal
-    from core.storage.models import EdgeModel
-    from core.storage.repository import EdgeRepository
-    from core.schemas.edge import Edge
 
+    g = graph or app_state.graph
     with SessionLocal() as db:
-        model = db.get(EdgeModel, edge_id)
-        if model is None:
+        try:
+            deleted = service_delete_edge(db, g, edge_id)
+        except ServiceError:
             return {"error": f"Edge '{edge_id}' not found."}
-        src_id, tgt_id = model.source_id, model.target_id
-        deleted = EdgeRepository(db).delete(edge_id)
-        if deleted and graph is not None:
-            graph.remove_edge(src_id, tgt_id)
     return {"deleted": deleted, "edge_id": edge_id}
 
 
@@ -322,8 +319,8 @@ def graph_stats(graph: Any = None) -> dict:
 
 def resolve_wikilinks(graph: Any = None) -> dict:
     """Scan all entries for [[wikilinks]] and create edges for matches."""
-    from core import app_state
     from agents.extraction_agent.agent import ExtractionAgent
+    from core import app_state
 
     g = graph or app_state.graph
     agent = ExtractionAgent(g)
@@ -333,8 +330,8 @@ def resolve_wikilinks(graph: Any = None) -> dict:
 
 def remove_dangling_edges(graph: Any = None) -> dict:
     """Remove edges pointing to deleted entries."""
-    from core import app_state
     from agents.maintenance_agent.agent import MaintenanceAgent
+    from core import app_state
 
     g = graph or app_state.graph
     agent = MaintenanceAgent(g)
@@ -356,14 +353,20 @@ def fetch_url(url: str, timeout: int = 15) -> dict:
     try:
         try:
             import httpx
+
             with httpx.Client(follow_redirects=True, timeout=timeout) as client:
                 resp = client.get(url, headers={"User-Agent": "KnowDoGraph/1.0"})
                 return {"url": url, "status_code": resp.status_code, "text": resp.text[:20000]}
         except ImportError:
             import urllib.request
+
             req = urllib.request.Request(url, headers={"User-Agent": "KnowDoGraph/1.0"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-                return {"url": url, "status_code": resp.status, "text": resp.read(20000).decode("utf-8", errors="replace")}
+                return {
+                    "url": url,
+                    "status_code": resp.status,
+                    "text": resp.read(20000).decode("utf-8", errors="replace"),
+                }
     except Exception as exc:
         return {"url": url, "error": str(exc)}
 
@@ -388,7 +391,9 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def find_similar_nodes(title: str, limit: int = 8, mode: str = "hybrid", graph: Any = None) -> list[dict]:
+def find_similar_nodes(
+    title: str, limit: int = 8, mode: str = "hybrid", graph: Any = None
+) -> list[dict]:
     """Search for nodes whose title or aliases closely resemble *title*.
 
     Use this before creating a new node to avoid duplicates and decide whether
@@ -443,16 +448,22 @@ def get_graph_overview(sample_size: int = 15, graph: Any = None) -> dict:
 
     type_dist = dict(Counter(e.entry_type.value for e in all_entries))
     sample = random.sample(all_entries, min(sample_size, len(all_entries)))
-    sample_titles = [{"id": e.id, "title": e.title, "type": e.entry_type.value, "tags": e.tags} for e in sample]
+    sample_titles = [
+        {"id": e.id, "title": e.title, "type": e.entry_type.value, "tags": e.tags} for e in sample
+    ]
 
     # Top connected nodes (by total degree in the in-memory graph)
     top_nodes: list[dict] = []
     try:
-        degree_map = dict(g._g.degree())  # type: ignore[attr-defined]
+        degree_map = g.degree_map()
         top_ids = sorted(degree_map, key=lambda k: degree_map[k], reverse=True)[:5]
         id_to_entry = {e.id: e for e in all_entries}
         top_nodes = [
-            {"id": nid, "title": id_to_entry[nid].title if nid in id_to_entry else "?", "degree": degree_map[nid]}
+            {
+                "id": nid,
+                "title": id_to_entry[nid].title if nid in id_to_entry else "?",
+                "degree": degree_map[nid],
+            }
             for nid in top_ids
         ]
     except Exception:
@@ -539,7 +550,9 @@ def merge_entries(
 
         # Merge metadata into primary
         if merge_aliases:
-            new_aliases = list(dict.fromkeys(primary.aliases + duplicate.aliases + [duplicate.title]))
+            new_aliases = list(
+                dict.fromkeys(primary.aliases + duplicate.aliases + [duplicate.title])
+            )
             primary.aliases = new_aliases
         if merge_tags:
             primary.tags = list(dict.fromkeys(primary.tags + duplicate.tags))
@@ -549,6 +562,7 @@ def merge_entries(
 
         # Delete the duplicate entry model directly
         from core.storage.models import EntryModel
+
         dup_model = db.get(EntryModel, duplicate.id)
         if dup_model:
             db.delete(dup_model)
@@ -559,6 +573,7 @@ def merge_entries(
         g.remove_entry(duplicate.id)
         with SessionLocal() as db2:
             from core.retrieval.retrieval import RetrievalEngine as RE
+
             refreshed = RE(db2, g).get_entry_by_id(primary.id)
             if refreshed:
                 g.add_entry(refreshed)
@@ -623,7 +638,7 @@ def add_script_to_entry(
     """
     from core import app_state
     from core.retrieval.retrieval import RetrievalEngine
-    from core.schemas.entry import NodeAsset, ASSET_FOLDER_SCRIPTS
+    from core.schemas.entry import ASSET_FOLDER_SCRIPTS, NodeAsset
     from core.storage.database import SessionLocal
     from core.storage.repository import EntryRepository
 
@@ -637,18 +652,21 @@ def add_script_to_entry(
         resolved_filename = filename or (_slug(entry.title) + _ext_for_language(language))
         # Replace existing asset at scripts/<filename> if present
         entry.assets = [
-            a for a in entry.assets
+            a
+            for a in entry.assets
             if not (a.folder == ASSET_FOLDER_SCRIPTS and a.filename == resolved_filename)
         ]
-        entry.assets.append(NodeAsset(
-            folder=ASSET_FOLDER_SCRIPTS,
-            filename=resolved_filename,
-            kind="file",
-            content=code,
-            language=language,
-            requirements=requirements or [],
-            description=description,
-        ))
+        entry.assets.append(
+            NodeAsset(
+                folder=ASSET_FOLDER_SCRIPTS,
+                filename=resolved_filename,
+                kind="file",
+                content=code,
+                language=language,
+                requirements=requirements or [],
+                description=description,
+            )
+        )
         updated = EntryRepository(db).update(entry)
 
     if g is not None and updated:
@@ -657,8 +675,10 @@ def add_script_to_entry(
     return {
         "id": updated.id,
         "title": updated.title,
-        "scripts": [{"filename": s.filename, "language": s.language, "requirements": s.requirements}
-                    for s in updated.scripts],
+        "scripts": [
+            {"filename": s.filename, "language": s.language, "requirements": s.requirements}
+            for s in updated.scripts
+        ],
     }
 
 
@@ -729,51 +749,46 @@ def add_asset_to_entry(
     ``GET /entries/{entry_id}/assets/{folder}/{filename}``.
     """
     from core import app_state
-    from core.retrieval.retrieval import RetrievalEngine
     from core.schemas.entry import NodeAsset
+    from core.services.assets import add_or_replace_asset
+    from core.services.errors import ServiceError
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
 
     g = graph or app_state.graph
+    try:
+        asset = NodeAsset(
+            folder=folder,
+            filename=filename,
+            kind=kind,
+            content=content,
+            language=language,
+            mime_type=mime_type,
+            description=description,
+            requirements=requirements or [],
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+
     with SessionLocal() as db:
-        engine = RetrievalEngine(db, g)
-        entry = engine.resolve_identifier(entry_id)
-        if entry is None:
-            return {"error": f"Entry '{entry_id}' not found."}
         try:
-            asset = NodeAsset(
-                folder=folder,
-                filename=filename,
-                kind=kind,
-                content=content,
-                language=language,
-                mime_type=mime_type,
-                description=description,
-                requirements=requirements or [],
-            )
-        except ValueError as exc:
+            updated_id, saved_asset = add_or_replace_asset(db, g, entry_id, asset)
+        except ServiceError as exc:
             return {"error": str(exc)}
-        # Replace existing asset at same folder/filename
-        entry.assets = [
-            a for a in entry.assets
-            if not (a.folder == asset.folder and a.filename == asset.filename)
-        ]
-        entry.assets.append(asset)
-        updated = EntryRepository(db).update(entry)
+        from core.retrieval.retrieval import RetrievalEngine
 
-    if g is not None and updated:
-        g.add_entry(updated)
+        updated = RetrievalEngine(db, g).resolve_identifier(updated_id)
 
+    total_assets = len(updated.assets) if updated is not None else 0
     return {
-        "id": updated.id,
-        "title": updated.title,
+        "id": updated_id,
+        "title": updated.title if updated is not None else "",
         "asset": {
-            "folder": asset.folder,
-            "filename": asset.filename,
-            "kind": asset.kind,
-            "download_url": f"/entries/{updated.id}/assets/{asset.folder}/{asset.filename}",
+            "folder": saved_asset.folder,
+            "filename": saved_asset.filename,
+            "kind": saved_asset.kind,
+            "download_url": f"/entries/{updated_id}/assets/{saved_asset.folder}/{saved_asset.filename}",
         },
-        "total_assets": len(updated.assets),
+        "total_assets": total_assets,
     }
 
 
@@ -798,14 +813,16 @@ def list_assets(identifier: str, folder: str | None = None, graph: Any = None) -
     for a in entry.assets:
         if folder and a.folder != folder.lower():
             continue
-        grouped.setdefault(a.folder, []).append({
-            "filename": a.filename,
-            "kind": a.kind,
-            "language": a.language,
-            "description": a.description,
-            "size": len(a.content or ""),
-            "download_url": f"/entries/{entry.id}/assets/{a.folder}/{a.filename}",
-        })
+        grouped.setdefault(a.folder, []).append(
+            {
+                "filename": a.filename,
+                "kind": a.kind,
+                "language": a.language,
+                "description": a.description,
+                "size": len(a.content or ""),
+                "download_url": f"/entries/{entry.id}/assets/{a.folder}/{a.filename}",
+            }
+        )
     return {
         "id": entry.id,
         "slug": entry.slug,
@@ -950,46 +967,30 @@ def submit_feedback(
     agent_id:
         Identifier of the agent or human that submitted the feedback.
     """
-    from datetime import datetime, timezone
     from core import app_state
-    from core.retrieval.retrieval import RetrievalEngine
-    from core.schemas.entry import VerificationStatus
+    from core.services.errors import ServiceError
+    from core.services.feedback import record_feedback
     from core.storage.database import SessionLocal
-    from core.storage.repository import EntryRepository
-
-    verdict_to_status = {
-        "works": VerificationStatus.self_tested,
-        "peer_works": VerificationStatus.peer_reviewed,
-        "bugged": VerificationStatus.bugged,
-        "deprecated": VerificationStatus.deprecated,
-        "unclear": None,
-    }
-    if verdict not in verdict_to_status:
-        return {"error": f"verdict must be one of {sorted(verdict_to_status)}"}
 
     g = graph or app_state.graph
     with SessionLocal() as db:
-        engine = RetrievalEngine(db, g)
-        entry = engine.resolve_identifier(entry_id)
-        if entry is None:
-            return {"error": f"Entry '{entry_id}' not found."}
-
-        entry.metadata.feedback_log.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "agent_id": agent_id,
-            "verdict": verdict,
-            "note": note,
-            "evidence": evidence,
-        })
-        new_status = verdict_to_status[verdict]
-        if new_status is not None:
-            entry.metadata.verification_status = new_status
-        EntryRepository(db).update(entry)
+        try:
+            result = record_feedback(
+                db,
+                g,
+                entry_id,
+                verdict=verdict,
+                note=note,
+                evidence=evidence,
+                agent_id=agent_id,
+            )
+        except ServiceError as exc:
+            return {"error": str(exc)}
 
     return {
-        "entry_id": entry.id,
-        "verification_status": entry.metadata.verification_status.value,
-        "feedback_count": len(entry.metadata.feedback_log),
+        "entry_id": result["id"],
+        "verification_status": result["verification_status"],
+        "feedback_count": result["feedback_count"],
     }
 
 
@@ -1008,7 +1009,8 @@ def list_by_verification(
         engine = RetrievalEngine(db, g)
         entries = engine.list_entries(limit=max(limit * 5, 500))
     matching = [
-        e for e in entries
+        e
+        for e in entries
         if e.metadata.verification_status and e.metadata.verification_status.value == status
     ]
     return [
@@ -1375,16 +1377,34 @@ TOOL_SCHEMAS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Entry title"},
-                    "content": {"type": "string", "description": "Entry body (wiki text, markdown)"},
+                    "content": {
+                        "type": "string",
+                        "description": "Entry body (wiki text, markdown)",
+                    },
                     "entry_type": {
                         "type": "string",
-                        "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "heuristic", "constraint", "generic"],
-                        "description": "Semantic type of this entry",
+                        "enum": [
+                            "capability",
+                            "procedure",
+                            "heuristic",
+                            "constraint",
+                        ],
+                        "description": "Canonical public type of this entry",
                     },
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "List of tags"},
-                    "aliases": {"type": "array", "items": {"type": "string"}, "description": "Alternative names / synonyms for this entry"},
-                    "source_provenance": {"type": "string", "description": "URL or path this entry was sourced from"},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of tags",
+                    },
+                    "aliases": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Alternative names / synonyms for this entry",
+                    },
+                    "source_provenance": {
+                        "type": "string",
+                        "description": "URL or path this entry was sourced from",
+                    },
                 },
                 "required": ["title"],
             },
@@ -1403,11 +1423,19 @@ TOOL_SCHEMAS: list[dict] = [
                     "content": {"type": "string"},
                     "entry_type": {
                         "type": "string",
-                        "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "heuristic", "constraint", "generic"],
+                        "enum": [
+                            "capability",
+                            "procedure",
+                            "heuristic",
+                            "constraint",
+                        ],
                     },
                     "tags": {"type": "array", "items": {"type": "string"}},
-                    "aliases": {"type": "array", "items": {"type": "string"}, "description": "Alternative names / synonyms"},
+                    "aliases": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Alternative names / synonyms",
+                    },
                 },
                 "required": ["entry_id"],
             },
@@ -1501,11 +1529,29 @@ TOOL_SCHEMAS: list[dict] = [
                     "target_id": {"type": "string", "description": "Target entry ID"},
                     "relation": {
                         "type": "string",
-                        "enum": ["dependency", "compatible_with", "alternative_to", "related_workflow",
-                                 "generated_from", "memory_of", "related_memory", "refinement_of", "derived_from",
-                                 "warning_about", "cited_by", "wikilink", "prerequisite", "replacement",
-                                 "execution_pathway", "transformation", "provenance", "compatibility",
-                                 "implements", "uses", "documents"],
+                        "enum": [
+                            "dependency",
+                            "compatible_with",
+                            "alternative_to",
+                            "related_workflow",
+                            "generated_from",
+                            "memory_of",
+                            "related_memory",
+                            "refinement_of",
+                            "derived_from",
+                            "warning_about",
+                            "cited_by",
+                            "wikilink",
+                            "prerequisite",
+                            "replacement",
+                            "execution_pathway",
+                            "transformation",
+                            "provenance",
+                            "compatibility",
+                            "implements",
+                            "uses",
+                            "documents",
+                        ],
                         "description": "Semantic relation type",
                     },
                     "weight": {"type": "number", "default": 1.0},
@@ -1580,7 +1626,11 @@ TOOL_SCHEMAS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "The URL to fetch"},
-                    "timeout": {"type": "integer", "default": 15, "description": "Request timeout in seconds"},
+                    "timeout": {
+                        "type": "integer",
+                        "default": 15,
+                        "description": "Request timeout in seconds",
+                    },
                 },
                 "required": ["url"],
             },
@@ -1618,7 +1668,10 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "The proposed node title or concept to check"},
+                    "title": {
+                        "type": "string",
+                        "description": "The proposed node title or concept to check",
+                    },
                     "limit": {"type": "integer", "default": 8},
                     "mode": {
                         "type": "string",
@@ -1647,7 +1700,11 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "sample_size": {"type": "integer", "default": 15, "description": "Number of random nodes to sample"},
+                    "sample_size": {
+                        "type": "integer",
+                        "default": 15,
+                        "description": "Number of random nodes to sample",
+                    },
                 },
             },
         },
@@ -1662,8 +1719,12 @@ TOOL_SCHEMAS: list[dict] = [
                 "properties": {
                     "entry_type": {
                         "type": "string",
-                        "enum": ["capability", "procedure", "workflow", "tool", "repository",
-                                 "environment", "dependency", "data", "analytical", "memory", "heuristic", "constraint", "generic"],
+                        "enum": [
+                            "capability",
+                            "procedure",
+                            "heuristic",
+                            "constraint",
+                        ],
                     },
                     "limit": {"type": "integer", "default": 50},
                 },
@@ -1683,10 +1744,24 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "primary_id": {"type": "string", "description": "ID or slug of the entry to keep"},
-                    "duplicate_id": {"type": "string", "description": "ID or slug of the entry to remove"},
-                    "merge_aliases": {"type": "boolean", "default": True, "description": "Add duplicate's title and aliases to primary's aliases"},
-                    "merge_tags": {"type": "boolean", "default": True, "description": "Merge duplicate's tags into primary"},
+                    "primary_id": {
+                        "type": "string",
+                        "description": "ID or slug of the entry to keep",
+                    },
+                    "duplicate_id": {
+                        "type": "string",
+                        "description": "ID or slug of the entry to remove",
+                    },
+                    "merge_aliases": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Add duplicate's title and aliases to primary's aliases",
+                    },
+                    "merge_tags": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Merge duplicate's tags into primary",
+                    },
                 },
                 "required": ["primary_id", "duplicate_id"],
             },
@@ -1707,13 +1782,26 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "skill": {"type": "string", "description": "Target skill id/slug/alias (L1 or L2)"},
+                    "skill": {
+                        "type": "string",
+                        "description": "Target skill id/slug/alias (L1 or L2)",
+                    },
                     "title": {"type": "string", "description": "Short heuristic title"},
                     "content": {"type": "string", "description": "Detailed heuristic description"},
                     "tags": {"type": "array", "items": {"type": "string"}},
-                    "domain": {"type": "string", "description": "Applicable domain (e.g. 'amorphous-carbon', 'spintronics')"},
-                    "confidence": {"type": "number", "description": "0.0–1.0 confidence in this heuristic"},
-                    "papers": {"type": "array", "items": {"type": "string"}, "description": "Supporting paper URLs/DOIs"},
+                    "domain": {
+                        "type": "string",
+                        "description": "Applicable domain (e.g. 'amorphous-carbon', 'spintronics')",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "0.0–1.0 confidence in this heuristic",
+                    },
+                    "papers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Supporting paper URLs/DOIs",
+                    },
                 },
                 "required": ["skill", "title", "content"],
             },
@@ -1839,7 +1927,10 @@ TOOL_SCHEMAS: list[dict] = [
                 "properties": {
                     "entry_id": {"type": "string", "description": "ID or slug of the target entry"},
                     "code": {"type": "string", "description": "Full source code of the script"},
-                    "filename": {"type": "string", "description": "Suggested filename (e.g. relax.py). Defaults to slug + extension."},
+                    "filename": {
+                        "type": "string",
+                        "description": "Suggested filename (e.g. relax.py). Defaults to slug + extension.",
+                    },
                     "language": {
                         "type": "string",
                         "description": "Programming language (e.g. python, bash, julia, r)",
@@ -1850,7 +1941,10 @@ TOOL_SCHEMAS: list[dict] = [
                         "items": {"type": "string"},
                         "description": "Package dependencies (e.g. ['ase', 'numpy'])",
                     },
-                    "description": {"type": "string", "description": "Short description of what the script does"},
+                    "description": {
+                        "type": "string",
+                        "description": "Short description of what the script does",
+                    },
                 },
                 "required": ["entry_id", "code"],
             },
@@ -1869,7 +1963,10 @@ TOOL_SCHEMAS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "identifier": {"type": "string", "description": "Entry ID or slug"},
-                    "filename": {"type": "string", "description": "Filter to a specific script filename (optional)"},
+                    "filename": {
+                        "type": "string",
+                        "description": "Filter to a specific script filename (optional)",
+                    },
                 },
                 "required": ["identifier"],
             },
@@ -1926,7 +2023,10 @@ TOOL_SCHEMAS: list[dict] = [
                         "enum": ["file", "link", "text"],
                         "default": "file",
                     },
-                    "language": {"type": "string", "description": "Optional language hint (python, bash, markdown, …)"},
+                    "language": {
+                        "type": "string",
+                        "description": "Optional language hint (python, bash, markdown, …)",
+                    },
                     "mime_type": {"type": "string", "description": "Optional MIME override"},
                     "description": {"type": "string"},
                     "requirements": {
@@ -1973,9 +2073,18 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "formula": {"type": "string", "description": "Chemical formula or material name (e.g. 'TiO2', 'GaN')"},
-                    "crystal_system": {"type": "string", "description": "e.g. cubic, tetragonal, hexagonal"},
-                    "space_group": {"type": "string", "description": "Hermann-Mauguin symbol or number (e.g. 'Fm-3m', '225')"},
+                    "formula": {
+                        "type": "string",
+                        "description": "Chemical formula or material name (e.g. 'TiO2', 'GaN')",
+                    },
+                    "crystal_system": {
+                        "type": "string",
+                        "description": "e.g. cubic, tetragonal, hexagonal",
+                    },
+                    "space_group": {
+                        "type": "string",
+                        "description": "Hermann-Mauguin symbol or number (e.g. 'Fm-3m', '225')",
+                    },
                     "description": {"type": "string"},
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "source_provenance": {"type": "string"},
@@ -2045,8 +2154,14 @@ TOOL_SCHEMAS: list[dict] = [
                 "properties": {
                     "status": {
                         "type": "string",
-                        "enum": ["unverified", "self_tested", "peer_reviewed",
-                                 "community_tested", "bugged", "deprecated"],
+                        "enum": [
+                            "unverified",
+                            "self_tested",
+                            "peer_reviewed",
+                            "community_tested",
+                            "bugged",
+                            "deprecated",
+                        ],
                         "default": "unverified",
                     },
                     "limit": {"type": "integer", "default": 50},

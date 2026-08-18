@@ -8,20 +8,20 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from fastapi import Request
-from fastapi.responses import PlainTextResponse
-
-from api.routes import entries, graph as graph_routes, mem as mem_routes, agent as agent_routes
+from api.routes import agent as agent_routes
+from api.routes import entries
+from api.routes import graph as graph_routes
+from api.routes import mem as mem_routes
 from api.routes import remote as remote_routes
 from api.routes import remote_sync as remote_sync_routes
 from api.routes import retrieve as retrieve_routes
 from core.app_state import graph
-from core.storage.database import SessionLocal, init_db
+from core.storage.database import init_db
 from core.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
     """Initialise the database and rebuild the in-memory graph on startup."""
     init_db()
     from core import events as _events
+
     _events.set_loop(asyncio.get_running_loop())
     from core.sync.db_watcher import reload_graph_from_db
 
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         from core import events as _events
+
         _events.signal_shutdown()
         for task in (sync_task, watcher_task):
             if task is not None:
@@ -104,6 +106,7 @@ def health() -> dict:
 def root_instructions(request: Request) -> PlainTextResponse:
     """Return the plain-text instruction sheet for any client that hits the server root."""
     from api.routes.remote import _render_instructions
+
     return PlainTextResponse(_render_instructions(request))
 
 
@@ -117,7 +120,9 @@ _FRONTEND_DIST = _FRONTEND_ROOT / "dist"
 
 if _FRONTEND_DIST.is_dir() and (_FRONTEND_DIST / "index.html").is_file():
     if (_FRONTEND_DIST / "assets").is_dir():
-        app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="ui-assets")
+        app.mount(
+            "/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="ui-assets"
+        )
 
     @app.get("/ui", include_in_schema=False)
     def serve_ui() -> FileResponse:

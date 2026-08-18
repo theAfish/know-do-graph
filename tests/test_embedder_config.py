@@ -58,8 +58,9 @@ class EmbedderConfigTests(unittest.TestCase):
             "KDG_EMBED_MODEL": "embedding-model",
             "KDG_EMBED_DIM": "2",
         }
-        with patch.dict(os.environ, env, clear=True), patch.dict(
-            sys.modules, {"openai": fake_openai}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict(sys.modules, {"openai": fake_openai}),
         ):
             embedder._default = None
 

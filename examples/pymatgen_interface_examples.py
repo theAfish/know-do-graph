@@ -31,6 +31,7 @@ from core.storage.repository import EdgeRepository, EntryRepository
 # Helper
 # ---------------------------------------------------------------------------
 
+
 def _existing_titles(repo: EntryRepository) -> set[str]:
     return {e.title for e in repo.get_all()}
 
@@ -722,27 +723,63 @@ Run [[Slab Generation Script]] to generate slab models.
 # Each tuple: (source_title, target_title, relation)
 EDGE_WIRING: list[tuple[str, str, EdgeRelation]] = [
     # Scripts implement generalised capabilities
-    ("Substrate Analysis Script",          "Lattice Matching via ZSL Algorithm",                 EdgeRelation.implements),
-    ("Substrate Analysis Script",          "Build Material Interface via Slab Stacking",         EdgeRelation.implements),
-    ("Slab Generation Script",             "Slab Surface Generation",                            EdgeRelation.implements),
-    ("Slab Generation Script",             "Build Material Interface via Slab Stacking",         EdgeRelation.implements),
-    ("Interface Builder Script",           "Coherent Interface Construction",                    EdgeRelation.implements),
-    ("Interface Builder Script",           "Build Material Interface via Slab Stacking",         EdgeRelation.implements),
-    ("Interface Energy Calculation Script","Build Material Interface via Slab Stacking",         EdgeRelation.documents),
-    ("Band Alignment Calculation Script",  "Build Material Interface via Slab Stacking",         EdgeRelation.documents),
-    ("Bulk Structure Download Script",     "Download Bulk Structure from Materials Project",     EdgeRelation.implements),
+    ("Substrate Analysis Script", "Lattice Matching via ZSL Algorithm", EdgeRelation.implements),
+    (
+        "Substrate Analysis Script",
+        "Build Material Interface via Slab Stacking",
+        EdgeRelation.implements,
+    ),
+    ("Slab Generation Script", "Slab Surface Generation", EdgeRelation.implements),
+    (
+        "Slab Generation Script",
+        "Build Material Interface via Slab Stacking",
+        EdgeRelation.implements,
+    ),
+    ("Interface Builder Script", "Coherent Interface Construction", EdgeRelation.implements),
+    (
+        "Interface Builder Script",
+        "Build Material Interface via Slab Stacking",
+        EdgeRelation.implements,
+    ),
+    (
+        "Interface Energy Calculation Script",
+        "Build Material Interface via Slab Stacking",
+        EdgeRelation.documents,
+    ),
+    (
+        "Band Alignment Calculation Script",
+        "Build Material Interface via Slab Stacking",
+        EdgeRelation.documents,
+    ),
+    (
+        "Bulk Structure Download Script",
+        "Download Bulk Structure from Materials Project",
+        EdgeRelation.implements,
+    ),
     # Scripts use dependencies
-    ("Substrate Analysis Script",          "pymatgen",   EdgeRelation.uses),
-    ("Slab Generation Script",             "pymatgen",   EdgeRelation.uses),
-    ("Interface Builder Script",           "pymatgen",   EdgeRelation.uses),
-    ("Interface Energy Calculation Script","pymatgen",   EdgeRelation.uses),
-    ("Band Alignment Calculation Script",  "pymatgen",   EdgeRelation.uses),
-    ("Bulk Structure Download Script",     "pymatgen",   EdgeRelation.uses),
-    ("Bulk Structure Download Script",     "mp-api",     EdgeRelation.uses),
+    ("Substrate Analysis Script", "pymatgen", EdgeRelation.uses),
+    ("Slab Generation Script", "pymatgen", EdgeRelation.uses),
+    ("Interface Builder Script", "pymatgen", EdgeRelation.uses),
+    ("Interface Energy Calculation Script", "pymatgen", EdgeRelation.uses),
+    ("Band Alignment Calculation Script", "pymatgen", EdgeRelation.uses),
+    ("Bulk Structure Download Script", "pymatgen", EdgeRelation.uses),
+    ("Bulk Structure Download Script", "mp-api", EdgeRelation.uses),
     # Procedure uses generalised capabilities
-    ("Build Material Interface via Slab Stacking", "Lattice Matching via ZSL Algorithm",  EdgeRelation.execution_pathway),
-    ("Build Material Interface via Slab Stacking", "Slab Surface Generation",             EdgeRelation.execution_pathway),
-    ("Build Material Interface via Slab Stacking", "Coherent Interface Construction",     EdgeRelation.execution_pathway),
+    (
+        "Build Material Interface via Slab Stacking",
+        "Lattice Matching via ZSL Algorithm",
+        EdgeRelation.execution_pathway,
+    ),
+    (
+        "Build Material Interface via Slab Stacking",
+        "Slab Surface Generation",
+        EdgeRelation.execution_pathway,
+    ),
+    (
+        "Build Material Interface via Slab Stacking",
+        "Coherent Interface Construction",
+        EdgeRelation.execution_pathway,
+    ),
     # Download procedure uses mp-api
     ("Download Bulk Structure from Materials Project", "mp-api", EdgeRelation.dependency),
 ]
@@ -750,6 +787,7 @@ EDGE_WIRING: list[tuple[str, str, EdgeRelation]] = [
 # ---------------------------------------------------------------------------
 # Seeder
 # ---------------------------------------------------------------------------
+
 
 def seed() -> None:
     init_db()
@@ -780,9 +818,8 @@ def seed() -> None:
         edge_repo = EdgeRepository(db)
         # Check existing edges to avoid dupes
         from core.storage.models import EdgeModel
-        existing_pairs = {
-            (e.source_id, e.target_id) for e in db.query(EdgeModel).all()
-        }
+
+        existing_pairs = {(e.source_id, e.target_id) for e in db.query(EdgeModel).all()}
         for src_title, tgt_title, relation in EDGE_WIRING:
             src_id = title_to_id.get(src_title)
             tgt_id = title_to_id.get(tgt_title)
@@ -801,6 +838,7 @@ def seed() -> None:
 
     # Resolve wikilinks
     from agents.extraction_agent.agent import ExtractionAgent
+
     agent = ExtractionAgent(app_state.graph)
     wl_count = agent.resolve_wikilinks()
     print(f"Resolved {wl_count} wikilink edge(s)")

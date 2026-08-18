@@ -13,6 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from api.schemas import ProgressiveEntry
 from core.app_state import graph as _graph
 from core.graph.kinds import uses_know_do_semantics
 from core.retrieval.progressive import ProgressiveRetriever
@@ -22,17 +23,16 @@ from core.storage.database import engine, get_db
 router = APIRouter()
 
 
+def _retriever(db: Session = Depends(get_db)) -> ProgressiveRetriever:
+    return ProgressiveRetriever(db, _graph)
+
+
 def _require_know_do_graph() -> None:
-    """Keep L1--L4 retrieval unavailable for arbitrary custom taxonomies."""
     if not uses_know_do_semantics(engine):
         raise HTTPException(
             status_code=409,
             detail="Progressive retrieval is available only for a Know-Do Graph database.",
         )
-
-
-def _retriever(db: Session = Depends(get_db)) -> ProgressiveRetriever:
-    return ProgressiveRetriever(db, _graph)
 
 
 def _annotate(entry: Entry) -> dict:
@@ -42,7 +42,7 @@ def _annotate(entry: Entry) -> dict:
     return data
 
 
-@router.get("/plan", response_model=list[dict])
+@router.get("/plan", response_model=list[ProgressiveEntry])
 def plan(
     goal: str = Query(..., description="Free-text description of what you want to do"),
     k: int = Query(5, ge=1, le=50),
@@ -59,28 +59,38 @@ def plan(
     return [_annotate(e) for e in retriever.plan(goal=goal, k=k, mode=mode, include_l2=include_l2)]
 
 
-@router.get("/heuristics", response_model=list[dict])
+@router.get("/heuristics", response_model=list[ProgressiveEntry])
 def heuristics(
     skill: str = Query(..., description="Entry id, slug, or alias of the L1/L2 skill"),
     k: int = Query(5, ge=1, le=50),
-    fallback: bool = Query(True, description="Include semantic-search L3 fallback if no edges exist"),
+    fallback: bool = Query(
+        True, description="Include semantic-search L3 fallback if no edges exist"
+    ),
     retriever: ProgressiveRetriever = Depends(_retriever),
 ):
     """Return L3 heuristics attached to a skill."""
     _require_know_do_graph()
-    return [_annotate(e) for e in retriever.heuristics_for(skill, k=k, include_semantic_fallback=fallback)]
+    return [
+        _annotate(e)
+        for e in retriever.heuristics_for(skill, k=k, include_semantic_fallback=fallback)
+    ]
 
 
-@router.get("/constraints", response_model=list[dict])
+@router.get("/constraints", response_model=list[ProgressiveEntry])
 def constraints(
     skill: str = Query(..., description="Entry id, slug, or alias of the L1/L2 skill"),
     k: int = Query(5, ge=1, le=50),
-    fallback: bool = Query(True, description="Include semantic-search L4 fallback if no edges exist"),
+    fallback: bool = Query(
+        True, description="Include semantic-search L4 fallback if no edges exist"
+    ),
     retriever: ProgressiveRetriever = Depends(_retriever),
 ):
     """Return L4 constraints / failure modes attached to a skill."""
     _require_know_do_graph()
-    return [_annotate(e) for e in retriever.constraints_for(skill, k=k, include_semantic_fallback=fallback)]
+    return [
+        _annotate(e)
+        for e in retriever.constraints_for(skill, k=k, include_semantic_fallback=fallback)
+    ]
 
 
 @router.get("/expand/{skill}", response_model=dict)

@@ -14,9 +14,7 @@ ReviewStrategy = Literal["seed", "global", "auto"]
 ALL_REVIEW_ACTIONS: FrozenSet[ReviewAction] = frozenset(
     {"modify", "delete", "distill", "merge_similar", "link"}
 )
-DEFAULT_REVIEW_ACTIONS: FrozenSet[ReviewAction] = frozenset(
-    {"modify", "merge_similar", "link"}
-)
+DEFAULT_REVIEW_ACTIONS: FrozenSet[ReviewAction] = frozenset({"modify", "merge_similar", "link"})
 
 
 @dataclass(frozen=True)
@@ -42,9 +40,7 @@ class ReviewPolicy:
             }
         )
     )
-    allowed_actions: FrozenSet[ReviewAction] = field(
-        default_factory=lambda: DEFAULT_REVIEW_ACTIONS
-    )
+    allowed_actions: FrozenSet[ReviewAction] = field(default_factory=lambda: DEFAULT_REVIEW_ACTIONS)
 
     def __post_init__(self) -> None:
         object.__setattr__(

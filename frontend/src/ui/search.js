@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { state, emit, on, EVENTS } from '../state.js';
 import { getSelections } from '../graph/render.js';
 import { applyColoring } from '../graph/coloring.js';
+import { byId } from '../dom.js';
 import { debounce } from '../utils.js';
 
 let searchInput;
@@ -9,9 +10,9 @@ let typeFilter;
 let statsEl;
 
 export function initSearch() {
-  searchInput = document.getElementById('search-input');
-  typeFilter = document.getElementById('type-filter');
-  statsEl = document.getElementById('stats');
+  searchInput = byId('search-input', HTMLInputElement);
+  typeFilter = byId('type-filter', HTMLSelectElement);
+  statsEl = byId('stats');
 
   searchInput.addEventListener('input', onSearchInput);
   typeFilter.addEventListener('change', () => {

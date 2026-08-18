@@ -16,7 +16,6 @@ interact with the server.
 from __future__ import annotations
 
 import os
-import textwrap
 import uuid
 from typing import Optional
 
@@ -25,12 +24,24 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from api.routes.remote_instructions import render_remote_instructions
+from api.schemas import (
+    RemoteAttachedSearchResponse,
+    RemoteChatResponse,
+    RemoteDistillResponse,
+    RemoteEntrySummary,
+    RemoteFeedbackResponse,
+    RemoteGraphOverviewResponse,
+    RemoteInboxItem,
+    RemoteSubmitResponse,
+)
 from core.app_state import graph as _graph
 from core.memory.memgraph import MemGraph
 from core.retrieval.progressive import ProgressiveRetriever
 from core.retrieval.retrieval import RetrievalEngine
 from core.schemas.edge import EdgeRelation
-from core.schemas.entry import entry_type_value
+from core.schemas.entry import EntryType
+from core.services.serialization import _strip_empty as _strip_empty_value
 from core.storage.database import get_db
 
 router = APIRouter()
@@ -38,195 +49,6 @@ router = APIRouter()
 # ── In-memory session store ───────────────────────────────────────────────────
 # Maps session_id → list of OpenAI-format message dicts (history after system prompt)
 _sessions: dict[str, list[dict]] = {}
-
-# ── Instruction text ──────────────────────────────────────────────────────────
-_INSTRUCTIONS_TEMPLATE = textwrap.dedent(
-    """\
-    ╔══════════════════════════════════════════════════════════════════════╗
-    ║           Know-Do Graph  —  Remote Agent Access                     ║
-    ╚══════════════════════════════════════════════════════════════════════╝
-
-    A wiki-native executable knowledge graph with LLM agents.
-    Remote agents and humans can query the graph, chat with agents, and
-    submit feedback over plain HTTP.
-
-    ═══ QUICK START ═════════════════════════════════════════════════════
-
-    # Chat with the graph agent (one-shot):
-    curl -X POST http://{host}/remote/chat \\
-         -H "Content-Type: application/json" \\
-         -d '{{"message": "What entries are in the graph?"}}'
-
-    # Multi-turn chat — use a session_id to retain history across calls:
-    curl -X POST http://{host}/remote/chat \\
-         -H "Content-Type: application/json" \\
-         -d '{{"message": "Tell me about procedures", "session_id": "agent-01"}}'
-
-    curl -X POST http://{host}/remote/chat \\
-         -H "Content-Type: application/json" \\
-         -d '{{"message": "Now show me the dependencies", "session_id": "agent-01"}}'
-
-    # Search the knowledge graph:
-    curl "http://{host}/remote/search?q=relaxation&limit=5"
-
-    # Filter by entry type  (capability | procedure | workflow | tool | ...):
-    curl "http://{host}/remote/search?entry_type=procedure"
-
-    # Administrative audit: disabled nodes are hidden by default.
-    curl "http://{host}/remote/search?q=relaxation&disabled=true"
-
-    # Hide or restore a node; its content and edges stay stored.
-    curl -X PUT http://{host}/entries/<id-or-slug>/disabled \
-         -H "Content-Type: application/json" \
-         -d '{{"disabled": true}}'
-
-    # Get a specific entry by ID, slug, or alias:
-    curl "http://{host}/remote/entry/<id-or-slug>"
-
-    # Get related entries (BFS traversal, default depth=1):
-    curl "http://{host}/remote/entry/<id>/related?depth=2"
-
-    # Progressive disclosure — when an entry has attached L3/L4 sidecar
-    # nodes, the entry response includes a `progressive_hints` block. These
-    # endpoints behave like /remote/search but are scoped to the L3/L4
-    # nodes attached to the watched entry. Returns summaries — fetch full
-    # content via /remote/entry/<id>:
-    curl "http://{host}/remote/entry/<id>/heuristics?q=keywords&limit=10"
-    curl "http://{host}/remote/entry/<id>/constraints?q=keywords&limit=10"
-
-    # Graph stats + full node/edge dump:
-    curl "http://{host}/remote/graph"
-
-    # Submit feedback or observations:
-    curl -X POST http://{host}/remote/feedback \\
-         -H "Content-Type: application/json" \\
-         -d '{{"session_id": "agent-01", "content": "Entry X needs more detail", "tags": ["feedback"]}}'
-
-    # Report that you have TESTED a node and it works (or is bugged).
-    # This updates the entry's verification_status and appends to its feedback_log.
-    # verdict: works | peer_works | bugged | deprecated | unclear
-    curl -X POST http://{host}/entries/<id-or-slug>/feedback \\
-         -H "Content-Type: application/json" \\
-         -d '{{"verdict": "works", "note": "ran on H2O, converged", "agent_id": "matcreator-01"}}'
-
-    # Or do both in one call — store a memory trace AND update the entry:
-    curl -X POST http://{host}/remote/feedback \\
-         -H "Content-Type: application/json" \\
-         -d '{{"session_id": "agent-01", "content": "MACE relaxation diverged on Cu",
-              "entry_id": "mace-relaxation", "verdict": "bugged",
-              "agent_id": "matcreator-01"}}'
-
-    ═══ SUBMIT KNOWLEDGE FOR LATER DISTILLATION ══════════════════════
-
-    # Deposit a plain-text summary or context dump into the inbox:
-    curl -X POST http://{host}/remote/submit \\
-         -H "Content-Type: application/json" \\
-         -d '{{"title": "MACE geometry optimisation walkthrough",
-              "content": "...",
-              "agent_id": "matcreator-01"}}'
-
-    # Deposit an OpenAI-style conversation transcript:
-    curl -X POST http://{host}/remote/submit \\
-         -H "Content-Type: application/json" \\
-         -d '{{"title": "ASE relaxation session",
-              "format": "openai",
-              "messages": [{{"role":"user","content":"..."}},
-                           {{"role":"assistant","content":"..."}}],
-              "agent_id": "matcreator-01"}}'
-
-    # Check what is waiting in the inbox:
-    curl "http://{host}/remote/inbox"
-
-    # Trigger distillation — the graph agent processes the inbox and creates nodes:
-    curl -X POST http://{host}/remote/distill \\
-         -H "Content-Type: application/json" \\
-         -d '{{}}'
-
-    # Dry-run: preview the distillation prompt without touching the graph:
-    curl -X POST http://{host}/remote/distill \\
-         -H "Content-Type: application/json" \\
-         -d '{{"dry_run": true}}'
-
-    # Clear session history:
-    curl -X DELETE http://{host}/remote/session/agent-01
-
-    ═══ ENDPOINTS ═══════════════════════════════════════════════════════
-
-    GET  /                           — This instruction sheet (plain text)
-    GET  /remote                     — Same instruction sheet
-    GET  /health                     — Server health + graph stats (JSON)
-    GET  /docs                       — Interactive API explorer (OpenAPI)
-
-    POST /remote/chat                — Chat with the orchestrator agent (read-only)
-    GET  /remote/search              — Search entries
-    GET  /remote/graph               — Graph stats + full node/edge list
-    GET  /remote/entry/{{id}}          — Entry by ID, slug, or alias
-    GET  /remote/entry/{{id}}/related  — Related entries (BFS)
-    GET  /remote/entry/{{id}}/heuristics  — Attached L3 heuristics (experience); scoped search, supports q/tags/limit
-    GET  /remote/entry/{{id}}/constraints — Attached L4 constraints (limits); scoped search, supports q/tags/limit
-    POST /remote/feedback            — Free-form trace; optionally also updates an entry
-    POST /entries/{{id}}/feedback      — Direct verification feedback on a node
-    PUT  /entries/{{id}}/disabled      — Hide or restore a node (body: {{"disabled": true|false}})
-    GET  /entries/{{id}}/download      — Download a script entry's source code
-    DELETE /remote/session/{{id}}      — Clear a session's chat history
-
-    POST /remote/submit              — Deposit raw knowledge into the inbox
-    GET  /remote/inbox               — List pending inbox submissions
-    POST /remote/distill             — Run graph agent to convert inbox into nodes
-
-    ═══ NODE VERIFICATION ═══════════════════════════════════════════════
-
-    Every entry has a `verification_status` (unverified by default). When you
-    use a skill/procedure node and verify it works (or find it broken),
-    POST to /entries/{{id}}/feedback so the graph learns. Verdicts:
-      works | peer_works | bugged | deprecated | unclear
-
-    ═══ CHAT REQUEST BODY ═══════════════════════════════════════════════
-
-      {{
-        "message":    "Your question or instruction",   // required
-        "session_id": "optional-id-for-multi-turn",    // optional
-        "model":      "optional-model-override"        // optional
-      }}
-
-    Response: {{"response": "...", "session_id": "..."}}
-
-    ═══ FEEDBACK REQUEST BODY ═══════════════════════════════════════════
-
-      {{
-        "session_id": "your-session-id",               // required
-        "content":    "Your observation or feedback",  // required
-        "tags":       ["optional", "tags"],            // optional
-        "success":    true | false | null              // optional
-      }}
-
-    ═══ SEARCH PARAMETERS ═══════════════════════════════════════════════
-
-      q          — free-text query (title, content, tags)
-      tags       — comma-separated tag filter  e.g. tags=python,simulation
-      entry_type — one of: capability, procedure, workflow, tool, repository,
-                   environment, dependency, data, analytical, memory, generic
-      limit      — max results (default 20)
-      disabled   — `true` to search only disabled nodes; omitted/false excludes them
-
-      Search returns a compact summary per entry — id, title, slug,
-      entry_type, tags, aliases, and a short content snippet. Use
-      GET /remote/entry/<id-or-slug> to fetch the full content of any
-      hit you want to inspect.
-
-    ═══ NOTES ═══════════════════════════════════════════════════════════
-
-      • For full CRUD access use /entries, /graph, /mem, and /agent routes.
-      • Human-readable graph explorer:  http://{host}/ui
-      • Full API reference:             http://{host}/docs
-    """
-)
-
-
-def _render_instructions(request: Request) -> str:
-    host = request.headers.get("host", "localhost:8000")
-    return _INSTRUCTIONS_TEMPLATE.format(host=host)
-
 
 # ── Pydantic request models ───────────────────────────────────────────────────
 
@@ -257,22 +79,24 @@ class SubmitRequest(BaseModel):
 
     At least one of ``content`` or ``messages`` must be provided.
     """
-    session_id: Optional[str] = None   # groups submissions; auto-generated if omitted
-    title: Optional[str] = None        # short label for what this submission is about
-    content: Optional[str] = None      # plain-text content or summary
+
+    session_id: Optional[str] = None  # groups submissions; auto-generated if omitted
+    title: Optional[str] = None  # short label for what this submission is about
+    content: Optional[str] = None  # plain-text content or summary
     # Structured message arrays — supply one of these *instead of* content when
     # you have a conversation transcript.
     messages: Optional[list[dict]] = None  # OpenAI / AutoGen format messages list
-    format: str = "text"               # "text" | "openai" | "autogen"
+    format: str = "text"  # "text" | "openai" | "autogen"
     tags: list[str] = []
-    agent_id: Optional[str] = None     # identifies the submitting agent
+    agent_id: Optional[str] = None  # identifies the submitting agent
 
 
 class DistillRequest(BaseModel):
     """Payload for POST /remote/distill."""
-    session_id: Optional[str] = None   # if given, distil only that session's inbox
-    model: Optional[str] = None        # LLM model override for the distillation agent
-    dry_run: bool = False              # if True, return the prompt without running the agent
+
+    session_id: Optional[str] = None  # if given, distil only that session's inbox
+    model: Optional[str] = None  # LLM model override for the distillation agent
+    dry_run: bool = False  # if True, return the prompt without running the agent
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -291,11 +115,13 @@ class DistillRequest(BaseModel):
 )
 def remote_instructions(request: Request) -> PlainTextResponse:
     """Return the plain-text instruction sheet for remote agents and humans."""
-    return PlainTextResponse(_render_instructions(request))
+    host = request.headers.get("host", "localhost:8000")
+    return PlainTextResponse(render_remote_instructions(host))
 
 
 @router.post(
     "/chat",
+    response_model=RemoteChatResponse,
     summary="Chat with the orchestrator agent",
     tags=["remote"],
 )
@@ -331,32 +157,24 @@ def remote_chat(body: ChatRequest) -> dict:
 
 @router.get(
     "/search",
+    response_model=list[RemoteEntrySummary],
     summary="Search the knowledge graph",
     tags=["remote"],
 )
 def remote_search(
     q: Optional[str] = None,
     tags: Optional[str] = None,
-    entry_type: Optional[str] = None,
+    entry_type: Optional[EntryType] = None,
     limit: int = 20,
-    disabled: bool = False,
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """Full-text search with optional tag and entry-type filters.
 
     ``tags`` accepts a comma-separated list, e.g. ``tags=python,simulation``.
-    Pass ``disabled=true`` to audit hidden entries; normal searches exclude
-    them entirely.
     """
     engine = RetrievalEngine(db, _graph)
     tag_list = [t.strip() for t in tags.split(",")] if tags else None
-    results = engine.search_entries(
-        query=q,
-        tags=tag_list,
-        entry_type=entry_type,
-        limit=limit,
-        disabled=disabled,
-    )
+    results = engine.search_entries(query=q, tags=tag_list, entry_type=entry_type, limit=limit)
     return [_summarize_entry(e) for e in results]
 
 
@@ -379,18 +197,7 @@ _METADATA_INTERNAL_KEYS = {
 
 def _strip_empty(d: dict) -> dict:
     """Recursively remove None values and empty containers from a dict."""
-    out = {}
-    for k, v in d.items():
-        if v is None:
-            continue
-        if isinstance(v, dict):
-            v = _strip_empty(v)
-            if not v:
-                continue
-        elif isinstance(v, list) and len(v) == 0:
-            continue
-        out[k] = v
-    return out
+    return _strip_empty_value(d)
 
 
 def _clean_entry(entry) -> dict:
@@ -439,7 +246,9 @@ def _summarize_entry(entry, snippet_words: int = 40) -> dict:
         "id": str(entry.id),
         "title": entry.title,
         "slug": entry.slug,
-        "entry_type": entry_type_value(entry.entry_type),
+        "entry_type": entry.entry_type.value
+        if hasattr(entry.entry_type, "value")
+        else entry.entry_type,
         "tags": list(entry.tags or []),
         "aliases": list(getattr(entry, "aliases", []) or []),
         "snippet": snippet,
@@ -448,17 +257,13 @@ def _summarize_entry(entry, snippet_words: int = 40) -> dict:
 
 @router.get(
     "/graph",
+    response_model=RemoteGraphOverviewResponse,
     summary="Graph statistics and full node/edge list",
     tags=["remote"],
 )
 def remote_graph_overview() -> dict:
     """Return graph stats (node/edge counts) plus a full dump of all nodes and edges."""
-    g = _graph._g
-    return {
-        **_graph.stats(),
-        "nodes": [{"id": n, **d} for n, d in g.nodes(data=True)],
-        "edges": [{"source": u, "target": v, **d} for u, v, d in g.edges(data=True)],
-    }
+    return {**_graph.stats(), **_graph.full_dump()}
 
 
 @router.get(
@@ -519,6 +324,7 @@ def _build_progressive_hints(entry_id: str, counts: dict) -> dict:
 
 @router.get(
     "/entry/{entry_id}/heuristics",
+    response_model=RemoteAttachedSearchResponse,
     summary="Search L3 heuristics attached to an entry",
     tags=["remote"],
 )
@@ -568,6 +374,7 @@ def remote_get_heuristics(
 
 @router.get(
     "/entry/{entry_id}/constraints",
+    response_model=RemoteAttachedSearchResponse,
     summary="Search L4 constraints attached to an entry",
     tags=["remote"],
 )
@@ -609,6 +416,7 @@ def remote_get_constraints(
 
 @router.get(
     "/entry/{entry_id}/related",
+    response_model=list[dict],
     summary="Get entries related to an entry via BFS",
     tags=["remote"],
 )
@@ -632,6 +440,7 @@ def remote_get_related(
 
 @router.post(
     "/feedback",
+    response_model=RemoteFeedbackResponse,
     status_code=201,
     summary="Submit feedback as a memory trace (and optionally update an entry)",
     tags=["remote"],
@@ -676,12 +485,13 @@ def remote_clear_session(session_id: str) -> None:
 
 # ── Inbox / distillation ──────────────────────────────────────────────────────
 
-_INBOX_SESSION = "inbox"   # MemGraph session used for all submit() entries
+_INBOX_SESSION = "inbox"  # MemGraph session used for all submit() entries
 _INBOX_TAG = "pending-distillation"
 
 
 @router.post(
     "/submit",
+    response_model=RemoteSubmitResponse,
     status_code=201,
     summary="Submit raw knowledge for later distillation into the graph",
     tags=["remote"],
@@ -701,6 +511,7 @@ def remote_submit(body: SubmitRequest) -> dict:
     """
     if not body.content and not body.messages:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=422, detail="Provide 'content' or 'messages'.")
 
     session_id = body.session_id or _INBOX_SESSION
@@ -712,9 +523,13 @@ def remote_submit(body: SubmitRequest) -> dict:
 
     if body.format in ("openai", "autogen") and body.messages:
         if body.format == "openai":
-            entries = mem.ingest_openai_messages(body.messages, tags=extra_tags, as_single_trace=True)
+            entries = mem.ingest_openai_messages(
+                body.messages, tags=extra_tags, as_single_trace=True
+            )
         else:
-            entries = mem.ingest_autogen_messages(body.messages, tags=extra_tags, as_single_trace=True)
+            entries = mem.ingest_autogen_messages(
+                body.messages, tags=extra_tags, as_single_trace=True
+            )
         # Prepend a title line if given
         if body.title and entries:
             entries[0].content = f"# {body.title}\n\n{entries[0].content}"
@@ -732,6 +547,7 @@ def remote_submit(body: SubmitRequest) -> dict:
 
 @router.get(
     "/inbox",
+    response_model=list[RemoteInboxItem],
     summary="List pending knowledge submissions awaiting distillation",
     tags=["remote"],
 )
@@ -748,21 +564,24 @@ def remote_inbox(session_id: Optional[str] = None, limit: int = 50) -> list[dict
         mem = MemGraph(session_id=sid)
         for e in mem.list():
             if _INBOX_TAG in e.tags and not e.promoted:
-                results.append({
-                    "id": e.id,
-                    "session_id": e.session_id,
-                    "title": (e.content.splitlines()[0].lstrip("# ") if e.content else ""),
-                    "preview": e.content[:300] if e.content else "",
-                    "tags": e.tags,
-                    "created_at": e.created_at.isoformat(),
-                    "source_format": e.source_format,
-                })
+                results.append(
+                    {
+                        "id": e.id,
+                        "session_id": e.session_id,
+                        "title": (e.content.splitlines()[0].lstrip("# ") if e.content else ""),
+                        "preview": e.content[:300] if e.content else "",
+                        "tags": e.tags,
+                        "created_at": e.created_at.isoformat(),
+                        "source_format": e.source_format,
+                    }
+                )
     results.sort(key=lambda x: x["created_at"])
     return results[:limit]
 
 
 @router.post(
     "/distill",
+    response_model=RemoteDistillResponse,
     summary="Distil pending inbox submissions into knowledge graph nodes",
     tags=["remote"],
 )
@@ -782,8 +601,10 @@ def remote_distill(body: DistillRequest) -> dict:
     Set ``dry_run=true`` to preview the distillation prompt without executing it.
     """
     import os
+
     if not os.environ.get("OPENAI_API_KEY"):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured.")
 
     sessions = [body.session_id] if body.session_id else MemGraph.list_sessions()
@@ -812,14 +633,14 @@ def remote_distill(body: DistillRequest) -> dict:
         "properly structured nodes. Follow the abstraction rules: create generic "
         "nodes, not overly-specific instances. Skip anything that is conversational "
         "filler or not worth a standalone node. After processing, briefly list what "
-        "was created.\n\n"
-        + combined
+        "was created.\n\n" + combined
     )
 
     if body.dry_run:
         return {"dry_run": True, "pending_count": len(pending), "prompt": prompt}
 
     from agents.graph_agent.agent import GraphAgent
+
     agent = GraphAgent(graph=_graph, model=body.model)
     response = agent.chat(prompt)
 

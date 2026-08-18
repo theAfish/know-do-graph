@@ -1,5 +1,6 @@
-import { closeDetail } from './panel.js';
+import { byId } from '../dom.js';
 import { resetView } from '../graph/render.js';
+import { closeDetail } from './panel.js';
 
 export function initShortcuts() {
   document.addEventListener('keydown', (e) => {
@@ -9,18 +10,16 @@ export function initShortcuts() {
       target instanceof HTMLTextAreaElement ||
       target instanceof HTMLSelectElement;
 
-    // "/" focuses search (unless already typing)
     if (e.key === '/' && !inField) {
       e.preventDefault();
-      const input = document.getElementById('search-input');
-      input?.focus();
-      input?.select();
+      const input = byId('search-input', HTMLInputElement);
+      input.focus();
+      input.select();
       return;
     }
 
-    // "Escape" closes panel + blurs search
     if (e.key === 'Escape') {
-      const input = document.getElementById('search-input');
+      const input = byId('search-input', HTMLInputElement);
       if (document.activeElement === input) {
         input.blur();
       } else {
@@ -29,7 +28,6 @@ export function initShortcuts() {
       return;
     }
 
-    // "r" resets view
     if (e.key === 'r' && !inField && !e.metaKey && !e.ctrlKey) {
       resetView();
     }

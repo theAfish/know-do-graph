@@ -4,28 +4,32 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
 from starlette.types import Receive, Scope, Send
 
+from api.schemas import (
+    GraphDataResponse,
+    GraphPathResponse,
+    GraphReloadResponse,
+    GraphStatsResponse,
+)
 from core.app_state import graph as _graph
 from core.graph.datasets import get_dataset_adapter
 from core.graph.kinds import GraphKind, detected_graph_kind
 from core.schemas.entry import EntryType
 from core.storage.database import engine
 from core.storage.models import EntryModel
+from sqlalchemy import select
 
 router = APIRouter()
 
 
 def _dataset_adapter():
-    """Return an alternate read-only dataset adapter when appropriate."""
     if detected_graph_kind(engine) is GraphKind.CUSTOM:
         return None
     return get_dataset_adapter(engine, entry_count=_graph._g.number_of_nodes())
 
 
 def _native_dataset_description() -> dict:
-    """Describe the active graph without applying a non-native adapter."""
     kind = detected_graph_kind(engine)
     if kind is GraphKind.CUSTOM:
         with engine.connect() as conn:
@@ -42,7 +46,6 @@ def _native_dataset_description() -> dict:
             "read_only": False,
             "capabilities": ["graph"],
             "entry_types": entry_types,
-            "color_modes": ["type", "relevance", "timestamp", "usage_count", "trust_score"],
             "controls": [],
             "levels": [],
         }
@@ -75,54 +78,44 @@ class _SSEResponse(StreamingResponse):
             pass
 
 
-@router.get("/stats")
-def graph_stats() -> dict:
+@router.get("/stats", response_model=GraphStatsResponse)
+def graph_stats() -> GraphStatsResponse:
     """Return high-level graph statistics."""
     adapter = _dataset_adapter()
     if adapter:
         description = adapter.describe()
-        default_level = description["default_level"]
-        level = next(item for item in description["levels"] if item["level"] == default_level)
-        return {
-            "nodes": level["nodes"],
-            "edges": level["edges"],
-            "read_only": True,
-            "dataset": description,
-        }
+        level = next(item for item in description["levels"] if item["level"] == description["default_level"])
+        return {"nodes": level["nodes"], "edges": level["edges"], "is_dag": False, "unreviewed_nodes": 0}
     return _graph.stats()
 
 
 @router.get("/dataset")
 def describe_graph_dataset() -> dict:
-    """Describe the source graph and optional view controls for the UI."""
+    """Describe graph kind and any read-only dataset view controls."""
     adapter = _dataset_adapter()
-    if adapter:
-        return adapter.describe()
-    return _native_dataset_description()
+    return adapter.describe() if adapter else _native_dataset_description()
 
 
-@router.get("/path")
-def find_path(source: str, target: str, cutoff: int = 6) -> dict:
+@router.get("/path", response_model=GraphPathResponse)
+def find_path(source: str, target: str, cutoff: int = 6) -> GraphPathResponse:
     """Find all simple paths between two entry IDs."""
     paths = _graph.find_paths(source, target, cutoff=cutoff)
     return {"source": source, "target": target, "paths": paths}
 
 
-@router.get("/subgraph/{entry_id}")
-def get_subgraph(entry_id: str, depth: int = 2) -> dict:
+@router.get("/subgraph/{entry_id}", response_model=GraphDataResponse)
+def get_subgraph(entry_id: str, depth: int = 2) -> GraphDataResponse:
     """Return the ego-subgraph centred on *entry_id* up to *depth* hops."""
     sg = _graph.get_subgraph(entry_id, depth=depth)
     return {
+        "metadata": {},
         "nodes": [{"id": n, **d} for n, d in sg.nodes(data=True)],
-        "edges": [
-            {"source": u, "target": v, **d}
-            for u, v, d in sg.edges(data=True)
-        ],
+        "edges": [{"source": u, "target": v, **d} for u, v, d in sg.edges(data=True)],
     }
 
 
-@router.get("/full")
-def get_full_graph(request: Request) -> dict:
+@router.get("/full", response_model=GraphDataResponse)
+def get_full_graph(request: Request) -> GraphDataResponse:
     """Return all nodes and edges in the graph."""
     adapter = _dataset_adapter()
     if adapter:
@@ -130,20 +123,12 @@ def get_full_graph(request: Request) -> dict:
             return adapter.graph_view(dict(request.query_params))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    g = _graph._g
-    return {
-        "metadata": dict(g.graph),
-        "nodes": [{"id": n, **d} for n, d in g.nodes(data=True)],
-        "edges": [
-            {"source": u, "target": v, **d}
-            for u, v, d in g.edges(data=True)
-        ],
-    }
+    return {"metadata": _graph.stats(), **_graph.full_dump()}
 
 
-@router.get("/search")
-def search_graph(request: Request) -> dict:
-    """Search the active read-only dataset without its overview sampling bound."""
+@router.get("/search", response_model=GraphDataResponse)
+def search_graph(request: Request) -> GraphDataResponse:
+    """Search a read-only dataset without its overview sampling bound."""
     adapter = _dataset_adapter()
     if not adapter or "search" not in adapter.describe().get("capabilities", []):
         raise HTTPException(status_code=404, detail="The current graph does not expose dataset search.")
@@ -153,9 +138,9 @@ def search_graph(request: Request) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/hierarchy/{node_id}")
-def get_hierarchy(node_id: str, request: Request) -> dict:
-    """Return a standardized parent-to-constituent graph when supported."""
+@router.get("/hierarchy/{node_id}", response_model=GraphDataResponse)
+def get_hierarchy(node_id: str, request: Request) -> GraphDataResponse:
+    """Return a standardized parent-to-constituent view when supported."""
     adapter = _dataset_adapter()
     if not adapter or "hierarchy" not in adapter.describe().get("capabilities", []):
         raise HTTPException(status_code=404, detail="The current graph does not expose a hierarchy.")
@@ -165,8 +150,8 @@ def get_hierarchy(node_id: str, request: Request) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/reload")
-def reload_graph() -> dict:
+@router.post("/reload", response_model=GraphReloadResponse)
+def reload_graph() -> GraphReloadResponse:
     """Rebuild the in-memory graph from the DB and broadcast a refresh event.
 
     Useful after out-of-process writes (CLI extract, db merge, manual sqlite

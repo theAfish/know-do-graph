@@ -10,11 +10,24 @@ from core.retrieval import vector_store
 from core.retrieval.embedder import build_embedding_text, get_default_embedder
 from core.retrieval.fusion import reciprocal_rank_fusion, trust_multiplier, usage_bump
 from core.schemas.edge import Edge, EdgeRelation
-from core.schemas.entry import Entry, EntryType, entry_type_value
+from core.schemas.entry import Entry, EntryType, canonical_entry_type, entry_type_value, legacy_entry_subtype
 from core.storage.models import EdgeModel, EntryModel
 
 _STOP_WORDS = {
-    "a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or", "is", "are", "be",
+    "a",
+    "an",
+    "the",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "and",
+    "or",
+    "is",
+    "are",
+    "be",
 }
 
 # Bidirectional synonym groups — each list is a set of interchangeable terms.
@@ -68,19 +81,8 @@ class RetrievalEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _is_disabled(entry: Entry) -> bool:
-        return entry.metadata.disabled
-
-    @classmethod
-    def _matches_disabled_filter(cls, entry: Entry, disabled: Optional[bool]) -> bool:
-        """Return whether *entry* matches a visibility/filter request.
-
-        ``False`` is the public default: only enabled entries are visible.
-        ``True`` is the explicit administrative search for disabled entries.
-        ``None`` is reserved for trusted internal maintenance callers that
-        need both kinds of persisted rows.
-        """
-        return disabled is None or cls._is_disabled(entry) is disabled
+    def _matches_disabled_filter(entry: Entry, disabled: Optional[bool]) -> bool:
+        return disabled is None or entry.metadata.disabled is disabled
 
     def get_entry_by_id(self, entry_id: str, *, disabled: Optional[bool] = False) -> Optional[Entry]:
         row = self._db.get(EntryModel, entry_id)
@@ -99,17 +101,10 @@ class RetrievalEngine:
     def get_entry_by_alias(self, alias: str, *, disabled: Optional[bool] = False) -> Optional[Entry]:
         """Return the first entry whose aliases list contains *alias* (case-insensitive)."""
         alias_lower = alias.lower()
-        rows = (
-            self._db.query(EntryModel)
-            .filter(EntryModel.aliases.ilike(f"%{alias_lower}%"))
-            .all()
-        )
+        rows = self._db.query(EntryModel).filter(EntryModel.aliases.ilike(f"%{alias_lower}%")).all()
         for row in rows:
             entry = Entry(**row.to_dict())
-            if (
-                any(a.lower() == alias_lower for a in entry.aliases)
-                and self._matches_disabled_filter(entry, disabled)
-            ):
+            if any(a.lower() == alias_lower for a in entry.aliases) and self._matches_disabled_filter(entry, disabled):
                 return entry
         return None
 
@@ -121,14 +116,9 @@ class RetrievalEngine:
             or self.get_entry_by_alias(identifier, disabled=disabled)
         )
 
-    def list_entries(
-        self, limit: int = 50, offset: int = 0, *, disabled: Optional[bool] = False
-    ) -> list[Entry]:
-        # Filter after deserialising metadata because metadata is stored in a
-        # portable JSON text column (SQLite and PostgreSQL compatible).
-        rows = self._db.query(EntryModel).all()
-        entries = [Entry(**row.to_dict()) for row in rows]
-        visible = [e for e in entries if self._matches_disabled_filter(e, disabled)]
+    def list_entries(self, limit: int = 50, offset: int = 0, *, disabled: Optional[bool] = False) -> list[Entry]:
+        entries = [Entry(**row.to_dict()) for row in self._db.query(EntryModel).all()]
+        visible = [entry for entry in entries if self._matches_disabled_filter(entry, disabled)]
         return visible[offset : offset + limit]
 
     # ------------------------------------------------------------------
@@ -182,10 +172,7 @@ class RetrievalEngine:
         """
         if not query:
             return [
-                (0.0, e)
-                for e in self._filter_only(
-                    tags=tags, entry_type=entry_type, limit=limit, disabled=disabled
-                )
+                (0.0, e) for e in self._filter_only(tags=tags, entry_type=entry_type, limit=limit, disabled=disabled)
             ]
 
         entries_by_id: dict[str, Entry] = {}
@@ -197,9 +184,7 @@ class RetrievalEngine:
                 query=query, tags=tags, entry_type=entry_type, limit=200, disabled=disabled
             )
             keyword_ranked = [eid for eid, _ in keyword_hits]
-            entries_by_id.update(
-                {eid: e for eid, _, e in self._with_entries(keyword_hits, disabled=disabled)}
-            )
+            entries_by_id.update({eid: e for eid, _, e in self._with_entries(keyword_hits, disabled=disabled)})
 
         # Channel B — vector ANN (skipped in keyword mode).
         vector_ranked: list[str] = []
@@ -214,7 +199,7 @@ class RetrievalEngine:
                 if row is None:
                     continue
                 d = row.to_dict()
-                if entry_type and d.get("entry_type") != entry_type_value(entry_type):
+                if entry_type and not _matches_entry_type(d, entry_type):
                     continue
                 if tags and not any(t in d["tags"] for t in tags):
                     continue
@@ -257,11 +242,13 @@ class RetrievalEngine:
     ) -> list[Entry]:
         q = self._db.query(EntryModel)
         if entry_type:
-            q = q.filter(EntryModel.entry_type == entry_type_value(entry_type))
+            q = q.filter(EntryModel.entry_type == entry_type_value(canonical_entry_type(entry_type) if entry_type_value(entry_type) in {t.value for t in EntryType} else entry_type))
         rows = q.limit(500).all()
         out: list[Entry] = []
         for row in rows:
             d = row.to_dict()
+            if entry_type and not _matches_entry_type(d, entry_type):
+                continue
             entry = Entry(**d)
             if not self._matches_disabled_filter(entry, disabled):
                 continue
@@ -286,12 +273,9 @@ class RetrievalEngine:
         """
         q = self._db.query(EntryModel)
         if entry_type:
-            q = q.filter(EntryModel.entry_type == entry_type_value(entry_type))
+            q = q.filter(EntryModel.entry_type == entry_type_value(canonical_entry_type(entry_type) if entry_type_value(entry_type) in {t.value for t in EntryType} else entry_type))
 
-        tokens = [
-            t for t in query.lower().split()
-            if len(t) > 2 and t not in _STOP_WORDS
-        ]
+        tokens = [t for t in query.lower().split() if len(t) > 2 and t not in _STOP_WORDS]
         if not tokens:
             tokens = [query.lower()]
 
@@ -315,6 +299,8 @@ class RetrievalEngine:
         scored: list[tuple[int, str]] = []
         for row in rows:
             d = row.to_dict()
+            if entry_type and not _matches_entry_type(d, entry_type):
+                continue
             if not self._matches_disabled_filter(Entry(**d), disabled):
                 continue
             if tags and not any(t in d["tags"] for t in tags):
@@ -338,9 +324,7 @@ class RetrievalEngine:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [(eid, s) for s, eid in scored[:limit]]
 
-    def _with_entries(
-        self, hits: list[tuple[str, int]], disabled: Optional[bool] = False
-    ) -> list[tuple[str, int, Entry]]:
+    def _with_entries(self, hits: list[tuple[str, int]], *, disabled: Optional[bool] = False) -> list[tuple[str, int, Entry]]:
         out: list[tuple[str, int, Entry]] = []
         for eid, score in hits:
             row = self._db.get(EntryModel, eid)
@@ -360,18 +344,10 @@ class RetrievalEngine:
             return []
         rows = (
             self._db.query(EdgeModel)
-            .filter(
-                (EdgeModel.source_id == entry_id)
-                | (EdgeModel.target_id == entry_id)
-            )
+            .filter((EdgeModel.source_id == entry_id) | (EdgeModel.target_id == entry_id))
             .all()
         )
-        return [
-            Edge(**row.to_dict())
-            for row in rows
-            if self.get_entry_by_id(row.source_id) is not None
-            and self.get_entry_by_id(row.target_id) is not None
-        ]
+        return [Edge(**row.to_dict()) for row in rows if self.get_entry_by_id(row.source_id) and self.get_entry_by_id(row.target_id)]
 
     # ------------------------------------------------------------------
     # Graph traversal
@@ -403,3 +379,16 @@ class RetrievalEngine:
             tags=entry.tags,
             content=entry.content,
         )
+
+
+def _matches_entry_type(data: dict, requested: EntryType | str) -> bool:
+    requested_value = entry_type_value(requested)
+    if requested_value not in {entry_type.value for entry_type in EntryType}:
+        return data.get("entry_type") == requested_value
+    requested_subtype = legacy_entry_subtype(requested)
+    if data.get("entry_type") != canonical_entry_type(requested).value:
+        return False
+    if not requested_subtype:
+        return True
+    metadata = data.get("metadata") or {}
+    return metadata.get("subtype") == requested_subtype

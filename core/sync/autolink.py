@@ -38,6 +38,7 @@ Design notes
   (``dependency`` for ``dependent_skills``, ``alternative_to`` for
   ``alternatives``, etc.) at ``weight=0.9``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,26 +58,65 @@ _MIN_ALIAS_LEN = 3
 # Very generic words we should NEVER treat as entry mentions, even if some
 # entry happens to be titled that way.
 _STOPWORDS = {
-    "agent", "agents", "tool", "tools", "skill", "skills", "workflow", "workflows",
-    "script", "scripts", "data", "model", "models", "code", "file", "files",
-    "task", "tasks", "input", "output", "result", "results", "test", "tests",
-    "main", "default", "config", "configuration", "setup", "example", "examples",
-    "readme", "guide", "doc", "docs", "documentation", "notes", "summary",
-    "user", "users", "system", "project", "repo", "repository", "package",
+    "agent",
+    "agents",
+    "tool",
+    "tools",
+    "skill",
+    "skills",
+    "workflow",
+    "workflows",
+    "script",
+    "scripts",
+    "data",
+    "model",
+    "models",
+    "code",
+    "file",
+    "files",
+    "task",
+    "tasks",
+    "input",
+    "output",
+    "result",
+    "results",
+    "test",
+    "tests",
+    "main",
+    "default",
+    "config",
+    "configuration",
+    "setup",
+    "example",
+    "examples",
+    "readme",
+    "guide",
+    "doc",
+    "docs",
+    "documentation",
+    "notes",
+    "summary",
+    "user",
+    "users",
+    "system",
+    "project",
+    "repo",
+    "repository",
+    "package",
 }
 
 # Frontmatter keys → (EdgeRelation, weight). Keys are matched on their YAML name.
 _FRONTMATTER_RELATIONS: dict[str, tuple[EdgeRelation, float]] = {
-    "dependent_skills":  (EdgeRelation.dependency, 0.9),
-    "dependencies":      (EdgeRelation.dependency, 0.9),
-    "depends_on":        (EdgeRelation.dependency, 0.9),
-    "requires":          (EdgeRelation.prerequisite, 0.9),
-    "prerequisites":     (EdgeRelation.prerequisite, 0.9),
-    "uses":              (EdgeRelation.uses, 0.8),
-    "alternatives":      (EdgeRelation.alternative_to, 0.7),
-    "alternative_to":    (EdgeRelation.alternative_to, 0.7),
-    "compatible_with":   (EdgeRelation.compatible_with, 0.7),
-    "related":           (EdgeRelation.related_workflow, 0.5),
+    "dependent_skills": (EdgeRelation.dependency, 0.9),
+    "dependencies": (EdgeRelation.dependency, 0.9),
+    "depends_on": (EdgeRelation.dependency, 0.9),
+    "requires": (EdgeRelation.prerequisite, 0.9),
+    "prerequisites": (EdgeRelation.prerequisite, 0.9),
+    "uses": (EdgeRelation.uses, 0.8),
+    "alternatives": (EdgeRelation.alternative_to, 0.7),
+    "alternative_to": (EdgeRelation.alternative_to, 0.7),
+    "compatible_with": (EdgeRelation.compatible_with, 0.7),
+    "related": (EdgeRelation.related_workflow, 0.5),
 }
 
 
@@ -84,9 +124,11 @@ _FRONTMATTER_RELATIONS: dict[str, tuple[EdgeRelation, float]] = {
 # Alias index
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class AliasIndex:
     """Maps lowercase-alias → set of entry ids. One alias may resolve to many."""
+
     by_alias: dict[str, set[str]] = field(default_factory=dict)
     # Also keep slug → id for direct frontmatter lookups.
     by_slug: dict[str, str] = field(default_factory=dict)
@@ -110,18 +152,19 @@ def build_alias_index(entries: Iterable[Entry]) -> AliasIndex:
         idx.by_slug[e.slug] = e.id
         idx.add(e.title, e.id)
         idx.add(e.slug, e.id)
-        for alias in (e.aliases or []):
+        for alias in e.aliases or []:
             idx.add(alias, e.id)
         # Strip common namespace prefixes so "pfd-vasp" also matches "vasp".
         for prefix in ("pfd-", "lammps-", "vasp-"):
             if e.slug.startswith(prefix):
-                idx.add(e.slug[len(prefix):], e.id)
+                idx.add(e.slug[len(prefix) :], e.id)
     return idx
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Generic mention scan
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def find_mentions(content: str, idx: AliasIndex, *, self_id: str | None = None) -> set[str]:
     """Return ids of entries whose alias appears in ``content``.
@@ -169,6 +212,7 @@ def parse_frontmatter(content: str) -> dict | None:
     body = m.group(1)
     try:
         import yaml  # type: ignore
+
         loaded = yaml.safe_load(body)
         data = loaded if isinstance(loaded, dict) else None
     except Exception:
@@ -192,14 +236,12 @@ def _mini_yaml(text: str) -> dict:
     which only inspects known keys.
     """
     out: dict[str, object] = {}
-    current_key: str | None = None
     current_list: list[str] | None = None
     for raw in text.splitlines():
         line = raw.rstrip()
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         stripped = line.lstrip(" ")
-        indent = len(line) - len(stripped)
         if stripped.startswith("- ") and current_list is not None:
             current_list.append(stripped[2:].strip().strip("'\""))
             continue
@@ -208,7 +250,6 @@ def _mini_yaml(text: str) -> dict:
             key = key.strip()
             val = val.strip()
             if not val:
-                current_key = key
                 current_list = []
                 out[key] = current_list
             else:
@@ -250,6 +291,7 @@ def enrich_from_frontmatter(
 # Public entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class AutoLinkResult:
     entry_id: str
@@ -277,25 +319,29 @@ def auto_link_entry(
         fm = parse_frontmatter(entry.content or "")
         if fm:
             for target_id, relation, weight in enrich_from_frontmatter(fm, idx, self_id=entry.id):
-                edge_repo.create(Edge(
-                    source_id=entry.id,
-                    target_id=target_id,
-                    relation=relation,
-                    weight=weight,
-                    metadata={"derived_by": "autolink.frontmatter"},
-                ))
+                edge_repo.create(
+                    Edge(
+                        source_id=entry.id,
+                        target_id=target_id,
+                        relation=relation,
+                        weight=weight,
+                        metadata={"derived_by": "autolink.frontmatter"},
+                    )
+                )
                 result.frontmatter_edges += 1
 
     if enable_mentions:
         mentions = find_mentions(entry.content or "", idx, self_id=entry.id)
         for target_id in mentions:
-            edge_repo.create(Edge(
-                source_id=entry.id,
-                target_id=target_id,
-                relation=EdgeRelation.documents,
-                weight=0.4,
-                metadata={"derived_by": "autolink.mention"},
-            ))
+            edge_repo.create(
+                Edge(
+                    source_id=entry.id,
+                    target_id=target_id,
+                    relation=EdgeRelation.documents,
+                    weight=0.4,
+                    metadata={"derived_by": "autolink.mention"},
+                )
+            )
             result.mention_edges += 1
 
     return result
